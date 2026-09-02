@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<title>Radar dev harness (DMI Open Data, local)</title>
+<style>
+  body{margin:0;background:#0d1013;color:#eef2f5;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1040px;margin:0 auto;padding:16px}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{font-size:13px;color:#9aa7b1;margin-bottom:12px}
+  .stage{position:relative;width:100%;aspect-ratio:1000/700;background:#151a1f;border:1px solid #2a323a;border-radius:8px;overflow:hidden}
+  .stage svg,.stage img{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .stage img{opacity:0;transition:opacity .1s linear}
+  .stage img.active{opacity:.9}
+  .stamp{position:absolute;left:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px}
+  .controls{display:flex;align-items:center;gap:12px;margin-top:12px}
+  button{background:#2b6fce;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
+  input[type=range]{flex:1}
+  .ticks{display:flex;justify-content:space-between;font-size:11px;color:#9aa7b1;margin-top:4px}
+  .status{margin-top:10px;font-size:12px;color:#9aa7b1;white-space:pre-wrap}
+  a{color:#5ea1f2}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Weather radar — DMI Open Data dev harness</h1>
+  <div class="sub">Local only, no Home Assistant. Frames rendered server-side from DMI's live radar composite (see <code>dev/render.py</code>). Data: DMI, CC BY 4.0.</div>
+
+  <div class="stage" id="stage">
+    <svg id="coast" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="stamp" id="stamp">Indlæser…</div>
+  </div>
+
+  <div class="controls">
+    <button id="play">Play</button>
+    <input type="range" id="slider" min="0" max="0" value="0" step="1">
+  </div>
+  <div class="ticks" id="ticks"></div>
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+// Same lon/lat box as dev/render.py's OUT_LON_MIN/MAX etc — must match
+// exactly for the coastline overlay to line up with the rendered PNGs.
+const LON_MIN = 7.0, LON_MAX = 16.0, LAT_MIN = 54.3, LAT_MAX = 58.2;
+const W = 1000, H = 700;
+const px = (lon, lat) => [
+  (lon - LON_MIN) / (LON_MAX - LON_MIN) * W,
+  (LAT_MAX - lat) / (LAT_MAX - LAT_MIN) * H,
+];
+
+// Rough coastline for visual reference only (not survey-accurate — a
+// proper basemap is a separate step in PLAN-DMI-MIGRATION.md).
+const coastPolys = [
+ [[10.62,57.74],[10.4,57.6],[9.95,57.59],[9.55,57.4],[8.6,57.12],[8.25,56.98],[8.14,56.7],[8.12,56.35],[8.15,55.8],[8.08,55.56],[8.45,55.46],[8.68,55.3],[8.62,55.1],[8.64,54.9],[9.45,54.83],[9.8,54.9],[9.4,55.05],[9.55,55.25],[9.5,55.5],[9.75,55.56],[9.55,55.7],[9.85,55.86],[10.22,56.13],[10.5,56.2],[10.9,56.4],[10.5,56.52],[10.3,56.55],[10.1,56.63],[9.8,56.7],[10.3,56.98],[10.4,57.2],[10.55,57.45]],
+ [[9.72,55.48],[10.0,55.6],[10.5,55.62],[10.82,55.5],[10.85,55.2],[10.55,55.05],[10.1,55.1],[9.85,55.25]],
+ [[11.1,55.65],[11.2,55.95],[11.3,56.02],[11.9,56.05],[12.0,55.9],[12.3,56.13],[12.6,56.05],[12.6,55.7],[12.3,55.58],[12.45,55.3],[12.15,55.1],[11.9,54.95],[11.25,55.25],[11.1,55.32]],
+ [[11.0,54.85],[11.5,54.85],[12.0,54.95],[12.2,54.9],[12.0,54.6],[11.6,54.65],[11.2,54.7]],
+];
+const svg = document.getElementById('coast');
+coastPolys.forEach(poly => {
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  p.setAttribute('points', poly.map(([lo, la]) => px(lo, la).join(',')).join(' '));
+  p.setAttribute('fill', '#20262c');
+  p.setAttribute('stroke', '#3a4652');
+  p.setAttribute('stroke-width', '1');
+  svg.appendChild(p);
+});
+
+const stage = document.getElementById('stage');
+const stamp = document.getElementById('stamp');
+const slider = document.getElementById('slider');
+const playBtn = document.getElementById('play');
+const ticksEl = document.getElementById('ticks');
+const statusEl = document.getElementById('status');
+
+let frames = [];
+let sliderValue = 0;
+let playing = false;
+let playTimer = null;
+
+function fmtLocal(iso) {
+  return new Date(iso).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
+}
+
+async function loadFrames() {
+  statusEl.textContent = 'Henter billedeliste…';
+  const res = await fetch('/api/frames');
+  const list = await res.json();
+  statusEl.textContent = `${list.length} billeder tilgængelige.`;
+
+  stage.querySelectorAll('img').forEach(n => n.remove());
+  frames = list.map(item => {
+    const img = document.createElement('img');
+    img.src = `/api/frame/${item.id}.png`;
+    img.alt = '';
+    stage.appendChild(img);
+    return { ...item, el: img };
+  });
+
+  slider.max = frames.length - 1;
+  ticksEl.innerHTML = [0, Math.floor(frames.length / 2), frames.length - 1]
+    .map(i => `<span>${fmtLocal(frames[i].time)}</span>`).join('');
+
+  show(frames.length - 1);
+}
+
+function show(i) {
+  sliderValue = i;
+  frames.forEach((f, idx) => f.el.classList.toggle('active', idx === i));
+  const f = frames[i];
+  if (!f) return;
+  stamp.textContent = 'kl. ' + fmtLocal(f.time);
+  slider.value = i;
+}
+
+function setPlaying(p) {
+  playing = p;
+  playBtn.textContent = p ? 'Pause' : 'Play';
+  clearInterval(playTimer);
+  if (p) playTimer = setInterval(() => show((sliderValue + 1) % frames.length), 600);
+}
+playBtn.onclick = () => setPlaying(!playing);
+slider.oninput = () => { setPlaying(false); show(+slider.value); };
+
+loadFrames().catch(e => { statusEl.textContent = 'Fejl: ' + e; });
+setInterval(() => loadFrames().catch(e => { statusEl.textContent = 'Fejl: ' + e; }), 60000);
+</script>
+</body>
+</html>
