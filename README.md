@@ -1,8 +1,8 @@
 # Weather Radar Card
 
-A Home Assistant Lovelace card showing live Danish precipitation radar
-(DMI, via TV 2's radar CDN): the last ~2 hours of observed rainfall and up to
-~1 hour of forecast, on TV 2's Denmark basemap, with a scrub/play timeline.
+A Home Assistant Lovelace card showing live Danish precipitation radar: the
+last ~2 hours of observed rainfall and up to ~1 hour of forecast, on a
+Denmark basemap, with a scrub/play timeline.
 
 Follows Home Assistant's own light/dark theme automatically, since it runs as
 a real card (not an iframe) and reads HA's theme CSS variables directly.
@@ -31,14 +31,14 @@ Add a card with:
 type: custom:weather-radar-card
 ```
 
-No configuration options yet — the card fetches directly from TV 2/DMI's
-public radar CDN in the viewer's browser, so the *viewing device* needs
-internet access (not necessarily your HA server).
+No configuration options yet — the card fetches directly from a public radar
+CDN in the viewer's browser, so the *viewing device* needs internet access
+(not necessarily your HA server).
 
 ## Notes
 
-- Radar data typically lags real time by 15–25 minutes; that's DMI's own
-  processing delay, not a bug in the card. The card checks for new frames
-  every minute.
+- Radar data typically lags real time by 15–25 minutes; that's the upstream
+  source's own processing delay, not a bug in the card. The card checks for
+  new frames every minute.
 - See `PLAN.md` for the conversion plan/progress from the original
   iframe-based `radar.html`.

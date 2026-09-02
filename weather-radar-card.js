@@ -1,4 +1,4 @@
-// Weather Radar Card — live DMI/TV2 precipitation radar for Denmark.
+// Weather Radar Card — live precipitation radar for Denmark.
 // Custom Lovelace card. See PLAN.md for the conversion plan this implements.
 
 const HIST_FRAMES = 13;      // last ~2h of observed frames, in 10-min steps (incl. the live one)
@@ -281,6 +281,6 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'weather-radar-card',
   name: 'Weather Radar Card',
-  description: 'Live DMI/TV2 precipitation radar for Denmark, with observed history and short-term forecast.',
+  description: 'Live precipitation radar for Denmark, with observed history and short-term forecast.',
   preview: false,
 });

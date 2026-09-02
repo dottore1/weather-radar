@@ -244,7 +244,7 @@ async function init(){
 }
 init();
 // check every minute so the "Nu" timestamp and frame URLs pick up newly published
-// data as soon as it appears (DMI/TV2 publish roughly every 10 min); loadFrames()
+// data as soon as it appears (new frames publish roughly every 10 min); loadFrames()
 // is a no-op when nothing new has shown up yet
 setInterval(loadFrames, 60*1000);
 </script>

@@ -8,7 +8,7 @@ iframe architecturally cannot do.
 ## Steps
 
 - [x] **1. Rewrite the page as a custom element** — `weather-radar-card.js`
-  - Port the existing logic (frame-fetching from DMI/TV2, anchor/forecast
+  - Port the existing logic (frame-fetching, anchor/forecast
     discovery, timeline, autoplay, live clock) from `radar.html`'s `<script>`
     into a class extending `HTMLElement`.
   - Implement the Lovelace card contract: `setConfig(config)`, `set hass(hass)`,
