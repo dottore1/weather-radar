@@ -1,0 +1,123 @@
+# Plan: Migrate from TV2's CDN to DMI Open Data (zero-risk data source)
+
+Supersedes the TV2-based data source used by `radar.html` / `weather-radar-card.js`.
+Goal: eliminate the copyright/ToS risk from hotlinking TV2's undocumented CDN
+(`gfx.tv2a.dk`, `radar-cdn.weather.tv2api.dk`) by switching to DMI's official
+Open Data program, which is explicitly licensed for this kind of reuse.
+
+This plan only *replaces the data source and rendering pipeline*; the visual
+design (map + colored radar overlay + scrub/play timeline) stays the same
+goal. See `PLAN.md` for the (separate, already-implemented) HACS
+packaging work — this plan changes what that packaging wraps.
+
+## Researched facts (verified directly, not just from docs)
+
+- **License**: DMI's Terms of Use (`dmi.dk/friedata/dokumentation/terms-of-use`)
+  is a CC BY 4.0-equivalent: redistribution, modification, and commercial use
+  are explicitly permitted, on the condition of attribution ("give appropriate
+  credit, provide a link to the license, indicate if changes were made").
+  **This means we now *must* credit DMI in the UI/README — the opposite of
+  the earlier request to drop TV2 attribution, which was about not
+  implicating TV2's undocumented CDN, not about avoiding attribution in
+  general.**
+- **Radar Data API**: `https://opendataapi.dmi.dk/v1/radardata`
+  - `collections/composite/items` — STAC-style GeoJSON listing, combined
+    national radar composite (what we want; also `pseudoCappi` and `volume`
+    exist per-station, not needed here).
+  - Each item has `datetime`, `created` (~8 min lag observed — better than
+    TV2's ~15-25 min), `bbox` in WGS84, `scanType` (`fullRange` = 240km
+    radius/full country coverage, `doppler` = 120km; items alternate, so we
+    must filter to `scanType=fullRange` for consistent national coverage —
+    still one every 10 min).
+  - Actual file: `.../download/<id>.h5` — **HDF5 binary** (confirmed via
+    direct download: 84KB, valid HDF5 header), not an image. This is the
+    standard European radar exchange format (ODIM_H5) — a reflectivity grid
+    plus georeferencing/projection metadata, not simple RGBA pixels.
+  - No API key was required for anything tested (items listing, file
+    download) — contradicts nothing in the docs, which don't mention a key
+    either.
+  - **CORS is blocked**: an `OPTIONS` preflight from an arbitrary origin gets
+    `403 Invalid CORS request`, and the items/download endpoints do the same
+    when an `Origin` header is present. DMI's API is evidently allow-listed
+    for their own site, not open for arbitrary third-party browser calls.
+    **This is the fact that forces an architecture change.**
+- **Basemap**: TV2's basemap image (`gfx.tv2a.dk/weather/radar_map_medium.png`)
+  is equally a TV2 copyright concern and needs replacing too — not just the
+  radar overlay. Not covered by DMI's data at all.
+
+## Architecture change this forces
+
+Browsers can't `fetch()` DMI's API directly (CORS), and even if they could,
+turning a raw HDF5 reflectivity grid into a correctly-projected, colored PNG
+in-browser is a real geospatial processing job, not a decode-and-display one.
+So the "pure static card that just points `<img>` tags at a live CDN" design
+doesn't carry over. The new pipeline needs a server-side step:
+
+```
+DMI API (HDF5, server-to-server — no CORS issue)
+   -> parse HDF5 (reflectivity grid + geolocation/projection)
+   -> colorize (dBZ -> RGBA, our own legend, since we're not reusing TV2's)
+   -> reproject/crop to match our basemap's extent
+   -> render PNG
+   -> serve same-origin to the browser (plain <img>, no CORS involved here)
+```
+
+- [ ] **1. Local dev/test harness (what you asked to run and inspect first,
+      no HA involved)**
+  - A small local script/server (Python, using `h5py` + `numpy` + `Pillow`;
+    all well-trodden for ODIM_H5) that:
+    - Polls `collections/composite/items?scanType=fullRange` for the latest
+      frames (mirrors the current anchor/history logic, just server-side).
+    - Downloads and decodes each HDF5 file server-side (no CORS issue,
+      since this isn't a browser request).
+    - Colorizes and renders each frame to a PNG, matching our chosen basemap
+      extent.
+    - Serves those PNGs over plain HTTP on `localhost` (e.g. Python's
+      built-in `http.server` or a two-route Flask app: `/frames/latest`,
+      `/frames/<timestamp>.png`).
+  - A `dev.html` page (plain HTML/JS, no HA/customElements dependency) that
+    points `<img>` tags at `http://localhost:<port>/...` and reuses the
+    existing timeline/scrub/play UI — run locally, open directly in your
+    browser, no Home Assistant required. This is the same harness we'd use
+    to visually verify colorization and alignment before it ever touches HA.
+
+- [ ] **2. Basemap replacement**
+  - Generate a static Denmark basemap once, offline, from public-domain
+    data (Natural Earth — explicitly public domain, no attribution even
+    required) at the same bbox DMI's composite reports
+    (`[4.379, 52.294, 20.735, 59.828]`), so radar-grid alignment is exact
+    instead of the eyeballed-pixel-match we had to do for TV2's PNGs.
+  - Commit the generated static image/SVG to the repo — zero ongoing
+    third-party dependency for the map layer at all, unlike before.
+
+- [ ] **3. Colorization/legend design**
+  - Pick our own dBZ -> color ramp (can't reuse TV2's exact palette; not
+    that we'd want to — it's their branding). Standard meteorological radar
+    palettes are well precedented (e.g. NWS-style blue->yellow->red, or a
+    single-hue intensity ramp) — pick one and document the dBZ breakpoints.
+
+- [ ] **4. Server-side rendering component for real HA deployment**
+  - Once the dev harness proves the pipeline out, port it into a proper HA
+    **custom_component** (Python integration — this is a HACS category
+    change from the current "Plugin/Lovelace" packaging in `PLAN.md`, since
+    the fetch+decode+render step must run somewhere with server-side
+    network access, which a frontend-only card architecturally can't do).
+  - The integration periodically renders frames and exposes them at an
+    HA-registered same-origin URL (e.g. via a custom view, or writing to
+    `www/` on a timer) that `weather-radar-card.js` then just points
+    `<img>` tags at, same as it does today — the frontend card mostly stays
+    as-is, it just points at our own backend instead of TV2's CDN.
+
+- [ ] **5. Update packaging/docs**
+  - `hacs.json`/`README.md` updated for an Integration-category install
+    (or hybrid integration+card) instead of pure Plugin.
+  - Add the required DMI attribution (license link + "if changes were
+    made" note, since we do recolor/reproject the data) to the README and
+    somewhere visible in the UI.
+
+## Suggested order of work
+
+Start with step 1 (local harness) — it's the part you explicitly want to
+poke at yourself in a browser, it proves out the HDF5-parsing/colorizing/
+alignment logic in isolation, and steps 2-5 build directly on it without
+needing HA at any point until step 4.
