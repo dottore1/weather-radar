@@ -62,8 +62,12 @@ DMI API (HDF5, server-to-server — no CORS issue)
    -> serve same-origin to the browser (plain <img>, no CORS involved here)
 ```
 
-- [ ] **1. Local dev/test harness (what you asked to run and inspect first,
-      no HA involved)**
+- [x] **1. Local dev/test harness (what you asked to run and inspect first,
+      no HA involved)** — `dev/render.py` + `dev/server.py` + `dev/index.html`,
+      see `dev/README.md` for setup/run. Verified end-to-end (HDF5 decode →
+      stereographic reprojection via `pyproj` → colorize → serve), including
+      confirming geographic alignment by overlaying known city coordinates
+      on a rendered frame.
   - A small local script/server (Python, using `h5py` + `numpy` + `Pillow`;
     all well-trodden for ODIM_H5) that:
     - Polls `collections/composite/items?scanType=fullRange` for the latest
