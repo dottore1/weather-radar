@@ -13,6 +13,9 @@
   .stage img{opacity:0;transition:opacity .1s linear}
   .stage img.active{opacity:.9}
   .stamp{position:absolute;left:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px}
+  .clock{position:absolute;right:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;font-variant-numeric:tabular-nums}
+  .city{fill:#eef2f5;font-size:12px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
+  .city-dot{fill:#eef2f5}
   .controls{display:flex;align-items:center;gap:12px;margin-top:12px}
   button{background:#2b6fce;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
   input[type=range]{flex:1}
@@ -29,6 +32,7 @@
   <div class="stage" id="stage">
     <svg id="coast" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="stamp" id="stamp">Indlæser…</div>
+    <div class="clock" id="clock">–</div>
   </div>
 
   <div class="controls">
@@ -57,18 +61,45 @@ const coastPolys = [
  [[11.1,55.65],[11.2,55.95],[11.3,56.02],[11.9,56.05],[12.0,55.9],[12.3,56.13],[12.6,56.05],[12.6,55.7],[12.3,55.58],[12.45,55.3],[12.15,55.1],[11.9,54.95],[11.25,55.25],[11.1,55.32]],
  [[11.0,54.85],[11.5,54.85],[12.0,54.95],[12.2,54.9],[12.0,54.6],[11.6,54.65],[11.2,54.7]],
 ];
+const cities = [
+  ['København', 12.57, 55.68],
+  ['Aarhus', 10.2, 56.16],
+  ['Odense', 10.39, 55.4],
+  ['Aalborg', 9.92, 57.05],
+  ['Esbjerg', 8.45, 55.47],
+  ['Rønne', 14.7, 55.1],
+  ['Skagen', 10.6, 57.72],
+];
+
 const svg = document.getElementById('coast');
+const ns = 'http://www.w3.org/2000/svg';
 coastPolys.forEach(poly => {
-  const p = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  const p = document.createElementNS(ns, 'polygon');
   p.setAttribute('points', poly.map(([lo, la]) => px(lo, la).join(',')).join(' '));
   p.setAttribute('fill', '#20262c');
   p.setAttribute('stroke', '#3a4652');
   p.setAttribute('stroke-width', '1');
   svg.appendChild(p);
 });
+cities.forEach(([name, lo, la]) => {
+  const [x, y] = px(lo, la);
+  const dot = document.createElementNS(ns, 'circle');
+  dot.setAttribute('cx', x);
+  dot.setAttribute('cy', y);
+  dot.setAttribute('r', 3);
+  dot.setAttribute('class', 'city-dot');
+  svg.appendChild(dot);
+  const label = document.createElementNS(ns, 'text');
+  label.setAttribute('x', x + 6);
+  label.setAttribute('y', y + 4);
+  label.setAttribute('class', 'city');
+  label.textContent = name;
+  svg.appendChild(label);
+});
 
 const stage = document.getElementById('stage');
 const stamp = document.getElementById('stamp');
+const clockEl = document.getElementById('clock');
 const slider = document.getElementById('slider');
 const playBtn = document.getElementById('play');
 const ticksEl = document.getElementById('ticks');
@@ -82,6 +113,12 @@ let playTimer = null;
 function fmtLocal(iso) {
   return new Date(iso).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
 }
+
+function tickClock() {
+  clockEl.textContent = 'Nu kl. ' + fmtLocal(new Date().toISOString());
+}
+tickClock();
+setInterval(tickClock, 1000);
 
 async function loadFrames() {
   statusEl.textContent = 'Henter billedeliste…';
@@ -110,7 +147,13 @@ function show(i) {
   frames.forEach((f, idx) => f.el.classList.toggle('active', idx === i));
   const f = frames[i];
   if (!f) return;
-  stamp.textContent = 'kl. ' + fmtLocal(f.time);
+  const isLatest = i === frames.length - 1;
+  let text = 'kl. ' + fmtLocal(f.time);
+  if (isLatest) {
+    const lagMin = Math.round((Date.now() - new Date(f.time).getTime()) / 60000);
+    text += ` (${lagMin} min. forsinket — normalt for radardata)`;
+  }
+  stamp.textContent = text;
   slider.value = i;
 }
 
