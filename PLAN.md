@@ -7,7 +7,7 @@ iframe architecturally cannot do.
 
 ## Steps
 
-- [ ] **1. Rewrite the page as a custom element**
+- [x] **1. Rewrite the page as a custom element** — `weather-radar-card.js`
   - Port the existing logic (frame-fetching from DMI/TV2, anchor/forecast
     discovery, timeline, autoplay, live clock) from `radar.html`'s `<script>`
     into a class extending `HTMLElement`.
@@ -25,17 +25,17 @@ iframe architecturally cannot do.
     needed. The map's overlay boxes (stamp/legend) stay fixed-light/fixed-dark-text
     on purpose, since they sit on the always-light map image, not HA's UI chrome.
 
-- [ ] **2. Add `hacs.json` at repo root**
+- [x] **2. Add `hacs.json` at repo root**
   ```json
   { "name": "Weather Radar Card", "filename": "weather-radar-card.js", "render_readme": true }
   ```
 
-- [ ] **3. Repo layout**
+- [x] **3. Repo layout**
   - Built JS file (`weather-radar-card.js`) at root or in `dist/`, matching
     `filename` in `hacs.json`. No bundler needed (no external deps) — stays a
     single hand-written file.
 
-- [ ] **4. Add `README.md`**
+- [x] **4. Add `README.md`**
   - Shown in the HACS UI via `render_readme`; expected for a custom repository.
 
 - [ ] **5. Cut a GitHub release/tag** (e.g. `v1.0.0`)
