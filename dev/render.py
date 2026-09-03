@@ -21,6 +21,26 @@ OUT_LON_MIN, OUT_LON_MAX = 7.0, 16.0
 OUT_LAT_MIN, OUT_LAT_MAX = 54.3, 58.2
 OUT_WIDTH, OUT_HEIGHT = 1000, 700
 
+# Padded working box used only by the forecast pipeline (see
+# dbz_grid_for_work / crop_to_display below): advecting the field forward
+# reveals edge pixels with no known data. Reprojecting a larger area than
+# what's displayed lets those reveals pull in real DMI data (already
+# present in the source composite, just outside our display box) instead
+# of leaving a growing blank/transparent margin as forecast lead time
+# increases. Sized generously (~150-190km) to comfortably cover a fast
+# frontal system over 90 min; if actual motion ever exceeds this, the
+# margin still degrades gracefully to the old blank-edge behavior rather
+# than failing outright.
+FCST_MARGIN_LON, FCST_MARGIN_LAT = 2.5, 1.8
+WORK_LON_MIN, WORK_LON_MAX = OUT_LON_MIN - FCST_MARGIN_LON, OUT_LON_MAX + FCST_MARGIN_LON
+WORK_LAT_MIN, WORK_LAT_MAX = OUT_LAT_MIN - FCST_MARGIN_LAT, OUT_LAT_MAX + FCST_MARGIN_LAT
+_DEG_PER_PX_LON = (OUT_LON_MAX - OUT_LON_MIN) / OUT_WIDTH
+_DEG_PER_PX_LAT = (OUT_LAT_MAX - OUT_LAT_MIN) / OUT_HEIGHT
+MARGIN_PX_X = round(FCST_MARGIN_LON / _DEG_PER_PX_LON)
+MARGIN_PX_Y = round(FCST_MARGIN_LAT / _DEG_PER_PX_LAT)
+WORK_WIDTH = OUT_WIDTH + 2 * MARGIN_PX_X
+WORK_HEIGHT = OUT_HEIGHT + 2 * MARGIN_PX_Y
+
 # dBZ -> RGBA color ramp. Rough intensity convention (light blue = light
 # rain, through purple/magenta = heavy) — our own choice, not reused from
 # any third party. Values below the first stop are fully transparent.
@@ -114,6 +134,27 @@ def dbz_grid_for(path_or_bytes) -> tuple:
         decoded, OUT_WIDTH, OUT_HEIGHT,
         OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX,
     )
+
+
+def dbz_grid_for_work(path_or_bytes) -> tuple:
+    """Same as dbz_grid_for, but reprojected onto the padded working box
+    (see FCST_MARGIN_* above) instead of the display box. Used by the
+    forecast pipeline so that shifting the field forward reveals real data
+    from the padding instead of a blank edge."""
+    decoded = decode_h5(path_or_bytes)
+    return reproject_to_dbz_grid(
+        decoded, WORK_WIDTH, WORK_HEIGHT,
+        WORK_LON_MIN, WORK_LON_MAX, WORK_LAT_MIN, WORK_LAT_MAX,
+    )
+
+
+def crop_to_display(dbz: np.ndarray, valid: np.ndarray) -> tuple:
+    """Crop a padded working-box grid back down to the standard OUT_WIDTH x
+    OUT_HEIGHT display box, so forecast PNGs line up pixel-for-pixel with
+    observed ones."""
+    y0, y1 = MARGIN_PX_Y, MARGIN_PX_Y + OUT_HEIGHT
+    x0, x1 = MARGIN_PX_X, MARGIN_PX_X + OUT_WIDTH
+    return dbz[y0:y1, x0:x1], valid[y0:y1, x0:x1]
 
 
 def png_from_grid(dbz, valid) -> bytes:

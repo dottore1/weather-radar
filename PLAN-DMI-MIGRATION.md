@@ -179,6 +179,18 @@ bevæge sig hen de kommende 90 minutter"*):
   and prone to reading as ~0 even with the edge-artifact fix in place.
   Verified against real data: forecast frames now visibly/numerically differ
   from each other (confirmed via pixel diff and side-by-side inspection).
+- **Second bug found and fixed** (forecast frames looked "too small"/shrinking
+  toward +90min): `shift_grid` correctly leaves revealed edge pixels
+  transparent (no known data moved in from outside the frame) — but at
+  large accumulated shifts near the end of the 90-min window, that reveals
+  a real, growing margin, which read as the image shrinking against the
+  page's dark background. Fixed by reprojecting onto a larger *padded*
+  working box for the forecast pipeline only (`render.py`'s
+  `dbz_grid_for_work`/`crop_to_display`, ~150-190km margin) so a shift
+  reveals real DMI data pulled from the padding instead of blank space,
+  then cropping back down to the standard display size before output —
+  observed and forecast PNGs stay pixel-aligned. Verified: the +90min frame
+  now has full edge-to-edge coverage, no blank margin.
 
 ## Suggested order of work
 
