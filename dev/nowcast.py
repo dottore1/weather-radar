@@ -191,7 +191,27 @@ TILE_DATA_SATURATE_PX = 3000  # combined (prev+curr) valid pixels at which the d
 # deviate from the shared global drift, regardless of its own trust score --
 # real per-region variation stays visible, but bounded, instead of letting
 # a handful of confident tiles run off in unrelated directions.
-TILE_MAX_DEVIATION_PX = 15
+#
+# A *fixed* pixel cap turned out to be the wrong shape for this: it's a
+# reasonable absolute allowance when the global vector is small (the case
+# it was built for), but the same fixed number becomes a much tighter
+# *angular* leash as the global vector grows -- e.g. a 15px cap against a
+# 34px global vector only allows ~20-25 degrees of directional swing,
+# which squeezed out almost all real per-region variation on a day with a
+# strong overall drift and made everything look like it was sliding in one
+# direction again (the original complaint the whole tiling approach exists
+# to fix). So the effective cap now scales with the global vector's own
+# magnitude: floor (handles near-zero global), a fraction of the global
+# magnitude (preserves real angular variation when there's a strong shared
+# drift), ceiling (still bounded even for a very fast-moving system).
+TILE_DEVIATION_FLOOR_PX = 15
+TILE_DEVIATION_FRACTION = 0.6
+TILE_DEVIATION_CEILING_PX = 40
+
+
+def _tile_max_deviation(global_dy: float, global_dx: float) -> float:
+    magnitude = (global_dy * global_dy + global_dx * global_dx) ** 0.5
+    return min(TILE_DEVIATION_CEILING_PX, max(TILE_DEVIATION_FLOOR_PX, TILE_DEVIATION_FRACTION * magnitude))
 
 
 def _tile_starts(total: int, tile_size: int, step: int) -> list[int]:
@@ -243,9 +263,15 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                            tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
                            min_valid_px: int = TILE_MIN_VALID_PX,
                            blend_alpha: float = TILE_BLEND_ALPHA,
-                           max_deviation_px: float = TILE_MAX_DEVIATION_PX) -> tuple[np.ndarray, np.ndarray]:
+                           max_deviation_px: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Returns (dy_field, dx_field): dense per-pixel arrays, same shape as
-    the input, giving a local motion vector at every pixel."""
+    the input, giving a local motion vector at every pixel.
+
+    max_deviation_px: how far any tile's vector may differ from the global
+    one (see TILE_DEVIATION_FLOOR_PX/FRACTION/CEILING). Leave as None (the
+    default, used in production) to scale it with the global vector's own
+    magnitude; pass an explicit number to override — mainly for tests that
+    want to isolate the underlying per-tile mechanism from this cap."""
     h, w = dbz_prev.shape
     step = tile_size - overlap
     y_starts = _tile_starts(h, tile_size, step)
@@ -256,6 +282,8 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
     # (see blend step below), so the *whole* system visibly translates
     # together instead of the sky looking like it's expanding in place.
     fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    if max_deviation_px is None:
+        max_deviation_px = _tile_max_deviation(fallback_dy, fallback_dx)
 
     dy_grid = np.full((len(y_starts), len(x_starts)), np.nan)
     dx_grid = np.full((len(y_starts), len(x_starts)), np.nan)
@@ -273,8 +301,9 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
             if (tdy * tdy + tdx * tdx) ** 0.5 > TILE_MAX_DISPLACEMENT_PX:
                 continue  # implausible spike — treat like "no reliable signal"
             # Bound how far even a plausible, confidently-measured tile can
-            # differ from the shared global drift (see TILE_MAX_DEVIATION_PX)
-            # — this is a *different* check than the absolute-magnitude one
+            # differ from the shared global drift (see max_deviation_px /
+            # _tile_max_deviation above) — this is a *different* check than
+            # the absolute-magnitude one
             # above: it catches a tile that's individually reasonable but
             # disagrees with everything else, which the magnitude check
             # alone can't (a tile pointing a plausible-looking 30px in a
