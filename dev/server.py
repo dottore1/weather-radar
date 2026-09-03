@@ -5,11 +5,15 @@ browser, and inspect the rendered/aligned radar frames directly.
     python dev/server.py
 
 Then visit http://localhost:8765/
+
+See PLAN-PERFORMANCE.md for the load-time optimizations implemented here.
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
+import threading
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +21,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-from render import render_png_bytes, dbz_grid_for, dbz_grid_for_work, crop_to_display, png_from_grid  # noqa: E402
+from render import (  # noqa: E402
+    decode_h5, reproject_to_dbz_grid, crop_to_display, png_from_grid,
+    OUT_WIDTH, OUT_HEIGHT, OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX,
+    WORK_WIDTH, WORK_HEIGHT, WORK_LON_MIN, WORK_LON_MAX, WORK_LAT_MIN, WORK_LAT_MAX,
+)
 from nowcast import estimate_motion, forecast_steps_from_motion  # noqa: E402
 
 PORT = 8765
@@ -29,6 +37,7 @@ HIST_FRAMES = 13  # ~2h at 10-min steps, matching the previous TV2-based design
 FCST_FRAMES = 9   # 90 min ahead at 10-min steps (advection nowcast — see dev/nowcast.py)
 CACHE_DIR = Path(__file__).parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
+FRAME_CACHE_SECONDS = 86400  # rendered frame content is immutable once generated for a given id
 
 
 def fetch_latest_items() -> list[dict]:
@@ -48,30 +57,54 @@ def _download(href: str) -> bytes:
         return resp.read()
 
 
+# --- decoded-HDF5 cache -----------------------------------------------------
+# Observed frames get downloaded+decoded once for their own image endpoint,
+# and the two motion-baseline frames used by the forecast pipeline are
+# *also* almost always among those same observed items. Without this cache
+# each of those files was being downloaded and HDF5-decoded twice (once at
+# display resolution, once at the padded WORK resolution) every cycle.
+_decoded_cache: dict[str, dict] = {}
+_decoded_lock = threading.Lock()
+
+
+def get_decoded(item: dict) -> dict:
+    frame_id = item["id"]
+    with _decoded_lock:
+        cached = _decoded_cache.get(frame_id)
+    if cached is not None:
+        return cached
+    h5_bytes = _download(item["asset"]["data"]["href"])
+    decoded = decode_h5(io.BytesIO(h5_bytes))
+    with _decoded_lock:
+        _decoded_cache[frame_id] = decoded
+    return decoded
+
+
+def prune_decoded_cache(current_ids: set[str]) -> None:
+    with _decoded_lock:
+        for stale_id in list(_decoded_cache):
+            if stale_id not in current_ids:
+                del _decoded_cache[stale_id]
+
+
 def get_or_render(item: dict) -> bytes:
     frame_id = item["id"]
     cache_path = CACHE_DIR / f"{frame_id}.png"
     if cache_path.exists():
         return cache_path.read_bytes()
-    import io
-    h5_bytes = _download(item["asset"]["data"]["href"])
-    png_bytes = render_png_bytes(io.BytesIO(h5_bytes))
+    decoded = get_decoded(item)
+    dbz, valid = reproject_to_dbz_grid(decoded, OUT_WIDTH, OUT_HEIGHT, OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX)
+    png_bytes = png_from_grid(dbz, valid)
     cache_path.write_bytes(png_bytes)
     return png_bytes
 
 
-def get_grid(item: dict):
-    import io
-    h5_bytes = _download(item["asset"]["data"]["href"])
-    return dbz_grid_for(io.BytesIO(h5_bytes))
-
-
 def get_grid_work(item: dict):
-    """Padded-working-box version of get_grid, for the forecast pipeline —
-    see dbz_grid_for_work in render.py."""
-    import io
-    h5_bytes = _download(item["asset"]["data"]["href"])
-    return dbz_grid_for_work(io.BytesIO(h5_bytes))
+    """Padded-working-box grid for the forecast pipeline — see
+    dbz_grid_for_work / FCST_MARGIN_* in render.py. Reuses the decoded-HDF5
+    cache instead of downloading/decoding again."""
+    decoded = get_decoded(item)
+    return reproject_to_dbz_grid(decoded, WORK_WIDTH, WORK_HEIGHT, WORK_LON_MIN, WORK_LON_MAX, WORK_LAT_MIN, WORK_LAT_MAX)
 
 
 MOTION_BASELINE_STEPS = 2  # estimate motion over a 20-min gap (items[-3] -> items[-1]),
@@ -79,21 +112,17 @@ MOTION_BASELINE_STEPS = 2  # estimate motion over a 20-min gap (items[-3] -> ite
                            # is noise-dominated and prone to spuriously reading as ~0
 
 
-def build_forecast(items: list[dict]) -> list[dict]:
-    """Advection nowcast — see dev/nowcast.py. Returns frame-list entries in
-    the same shape as the observed ones, plus caches each forecast PNG to
-    disk."""
+def _compute_forecast_sync(items: list[dict]) -> list[dict]:
+    """The actual forecast work: 2 downloads (unless already cached — see
+    get_decoded), 2 padded reprojections, an FFT motion estimate, and 9
+    shift+render steps. Expensive (~1.3s+) — see get_forecast_entries()
+    below for how callers avoid paying this on every poll."""
     if len(items) <= MOTION_BASELINE_STEPS:
         return []
     baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
-    # Padded working grids (see render.py's FCST_MARGIN_*), not the plain
-    # display grids: shifting the field forward reveals edge pixels, and we
-    # want those to pull real data from the padding rather than come up
-    # blank/transparent.
     dbz_base, valid_base = get_grid_work(baseline_item)
     dbz_curr, valid_curr = get_grid_work(curr_item)
     dy_baseline, dx_baseline = estimate_motion(dbz_base, valid_base, dbz_curr, valid_curr)
-    # per-10-min-step motion: the baseline spans MOTION_BASELINE_STEPS steps
     dy = round(dy_baseline / MOTION_BASELINE_STEPS)
     dx = round(dx_baseline / MOTION_BASELINE_STEPS)
     steps = forecast_steps_from_motion(dbz_curr, valid_curr, dy, dx, FCST_FRAMES)
@@ -115,6 +144,63 @@ def build_forecast(items: list[dict]) -> list[dict]:
     return entries
 
 
+# --- forecast result cache + background refresh -----------------------------
+# Keyed on (baseline_item.id, curr_item.id): as long as that pair hasn't
+# changed, the previous result is still correct (DMI hasn't published
+# anything new), so repeat /api/frames polls — which happen every 60s while
+# new data only shows up every ~10min — return instantly instead of redoing
+# the ~1.3s of work above. The very first computation still blocks (so the
+# first response actually has forecast data); every later change recomputes
+# in a background thread while continuing to serve the last-good result.
+_forecast_lock = threading.Lock()
+_forecast_state = {"key": None, "entries": []}
+_forecast_computing_key = None
+
+
+def _forecast_worker(items: list[dict], key: tuple) -> None:
+    global _forecast_computing_key
+    try:
+        entries = _compute_forecast_sync(items)
+        with _forecast_lock:
+            _forecast_state["key"] = key
+            _forecast_state["entries"] = entries
+    except Exception as e:
+        sys.stderr.write(f"[dev-server] background forecast refresh failed: {e}\n")
+    finally:
+        with _forecast_lock:
+            _forecast_computing_key = None
+
+
+def get_forecast_entries(items: list[dict]) -> list[dict]:
+    global _forecast_computing_key
+    if len(items) <= MOTION_BASELINE_STEPS:
+        return []
+    baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
+    key = (baseline_item["id"], curr_item["id"])
+
+    with _forecast_lock:
+        if _forecast_state["key"] == key:
+            return list(_forecast_state["entries"])
+        first_ever = _forecast_state["key"] is None
+        already_computing = _forecast_computing_key == key
+
+    if first_ever:
+        # Nothing to serve yet at all — block so the first response has data.
+        entries = _compute_forecast_sync(items)
+        with _forecast_lock:
+            _forecast_state["key"] = key
+            _forecast_state["entries"] = entries
+        return entries
+
+    if not already_computing:
+        with _forecast_lock:
+            _forecast_computing_key = key
+        threading.Thread(target=_forecast_worker, args=(items, key), daemon=True).start()
+
+    with _forecast_lock:
+        return list(_forecast_state["entries"])  # stale-but-fast, refreshing in the background
+
+
 INDEX_HTML_PATH = Path(__file__).parent / "index.html"
 
 
@@ -122,10 +208,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[dev-server] " + (fmt % args) + "\n")
 
-    def _send(self, status, content_type, body: bytes):
+    def _send(self, status, content_type, body: bytes, cache_seconds: int | None = None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if cache_seconds is not None:
+            self.send_header("Cache-Control", f"public, max-age={cache_seconds}")
         self.end_headers()
         self.wfile.write(body)
 
@@ -136,11 +224,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, "text/html; charset=utf-8", INDEX_HTML_PATH.read_bytes())
             elif path == "/api/frames":
                 items = fetch_latest_items()
+                prune_decoded_cache({it["id"] for it in items})
                 payload = [
                     {"id": it["id"], "time": it["properties"]["datetime"], "forecast": False}
                     for it in items
                 ]
-                payload.extend(build_forecast(items))
+                payload.extend(get_forecast_entries(items))
                 self._send(200, "application/json", json.dumps(payload).encode())
             elif path.startswith("/api/frame/"):
                 frame_id = path[len("/api/frame/"):].removesuffix(".png")
@@ -149,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not cache_path.exists():
                         self._send(404, "text/plain", b"forecast frame expired (recompute via /api/frames)")
                         return
-                    self._send(200, "image/png", cache_path.read_bytes())
+                    self._send(200, "image/png", cache_path.read_bytes(), cache_seconds=FRAME_CACHE_SECONDS)
                     return
                 items = fetch_latest_items()
                 match = next((it for it in items if it["id"] == frame_id), None)
@@ -157,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, "text/plain", b"frame not found (outside current window)")
                     return
                 png = get_or_render(match)
-                self._send(200, "image/png", png)
+                self._send(200, "image/png", png, cache_seconds=FRAME_CACHE_SECONDS)
             else:
                 self._send(404, "text/plain", b"not found")
         except Exception as e:  # dev harness: surface errors plainly

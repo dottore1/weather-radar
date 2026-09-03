@@ -34,7 +34,7 @@ for most of the ~1.35s warm-cache floor.
 
 ## Plan, ranked by impact/effort
 
-- [ ] **1. Skip forecast recomputation when the input hasn't changed
+- [x] **1. Skip forecast recomputation when the input hasn't changed
       (highest impact, cheap fix).** Cache the motion/forecast result keyed
       on `(baseline_item.id, curr_item.id)`; short-circuit `build_forecast`
       entirely when that pair matches the last computed one (the forecast
@@ -42,7 +42,7 @@ for most of the ~1.35s warm-cache floor.
       reprojection + FFT* that's being redone needlessly). Should collapse
       the ~1.35s warm-cache floor to close to zero.
 
-- [ ] **2. Stop double-fetching/double-decoding the same HDF5 files.**
+- [x] **2. Stop double-fetching/double-decoding the same HDF5 files.**
       `baseline_item` and `curr_item` (used for motion) are *also* among the
       13 observed items independently downloaded+decoded via `get_or_render`
       for their own image endpoints — right now that's two separate
@@ -52,7 +52,7 @@ for most of the ~1.35s warm-cache floor.
       output box(es) are actually needed from that single decode. Smaller
       win than #1 alone, but compounds with it.
 
-- [ ] **3. Make forecast computation non-blocking for the frame list.**
+- [x] **3. Make forecast computation non-blocking for the frame list.**
       Right now `/api/frames` can't return until all 9 forecast PNGs are
       fully rendered — the observed frame list (cheap, fast) is stuck behind
       that. Decouple: return the observed list immediately, compute/refresh
@@ -61,7 +61,7 @@ for most of the ~1.35s warm-cache floor.
       image requests serve whatever's cached (possibly briefly stale by a
       few seconds on a fresh frame) rather than blocking on it synchronously.
 
-- [ ] **4. Add HTTP caching headers to `/api/frame/<id>.png`.** Observed
+- [x] **4. Add HTTP caching headers to `/api/frame/<id>.png`.** Observed
       frames are immutable once rendered (a historical timestamp's content
       never changes) — add `Cache-Control: public, max-age=<long>` (and/or
       `ETag`) so the browser skips re-fetching them entirely on repeat visits
@@ -70,7 +70,7 @@ for most of the ~1.35s warm-cache floor.
       timestamp that shifts forward each cycle anyway (new `fid` per cycle,
       so this mostly matters for observed frames).
 
-- [ ] **5. Stop destroying/recreating all 22 `<img>` elements on every
+- [x] **5. Stop destroying/recreating all 22 `<img>` elements on every
       client-side refresh.** `dev/index.html`'s `loadFrames()` removes and
       rebuilds every frame `<img>` from scratch every 60s, forcing the
       browser to redo work (network round-trip even with #4's cache headers
@@ -78,7 +78,9 @@ for most of the ~1.35s warm-cache floor.
       Diff the frame list instead: only add newly-appeared frames, remove
       ones that fell out of the window, leave the rest untouched.
 
-- [ ] **6. Prioritize the initially-visible frame.** On first load, all 22
+- [x] **6. Prioritize the initially-visible frame.** Implemented via the
+      standard `fetchPriority` attribute plus a one-tick defer for the rest,
+      rather than `requestIdleCallback` (not supported in Safari). On first load, all 22
       `<img src>` are set at once; the browser fetches them roughly
       concurrently (capped by its per-host connection limit), but only one
       frame (the latest observed) is actually visible until the user scrubs
@@ -104,6 +106,32 @@ for most of the ~1.35s warm-cache floor.
       iteration — worth knowing that ceiling exists so effort isn't
       over-invested polishing a request-time architecture that the
       production version won't actually use.
+
+## Results (measured, items 1-6)
+
+Warm `/api/frames` dropped from **~1.35s to ~0.1s** (the remaining ~0.1s is
+just the DMI items-list HTTP call, which items 1-6 don't touch). The
+first-ever call after a cold start still pays the full ~1.3s forecast
+computation once, by design (see #3) — subsequent polls are near-instant
+until DMI actually publishes a new frame.
+
+Also found and fixed along the way:
+- A real bug in the #1/#3 implementation: `get_forecast_entries` read
+  `_forecast_computing_key` before it was declared `global` in that
+  function — since it's also *assigned* later in the same function, Python
+  scopes it as local for the whole function body, so the read raised
+  `UnboundLocalError` on every call. Caught by testing the function directly
+  against live data before trusting an HTTP round-trip.
+- **Multiple stale `dev/server.py` processes were still running and
+  listening on port 8765** (4 accumulated `python.exe` instances found via
+  `wmic`), because `TaskStop` on this background-task tool doesn't reliably
+  kill the actual child process tree on Windows — restarts throughout this
+  session were leaving the old process alive, so later `curl` tests could
+  silently hit stale (pre-fix, or even pre-bug) code while looking like
+  they'd hit the new server. Fixed by force-killing all of them and
+  verifying with `netstat`/`wmic` before trusting any subsequent timing
+  test. Worth checking for this specifically any time a restart's effects
+  don't show up as expected.
 
 ## Suggested order
 
