@@ -1,3 +1,9 @@
+> **Superseded** — this plan assumed the radar pipeline could stay purely
+> client-side (hotlinking TV2's CDN in the browser). Once that moved to
+> DMI's raw HDF5 Open Data, a real server-side pipeline became necessary
+> and a card alone could no longer do this. See `PLAN-HA-COMPONENT.md` for
+> what was actually built. Kept here for history.
+
 # Plan: Convert to a HACS-installable custom Lovelace card
 
 Goal: replace the standalone `radar.html` (loaded via an HA `iframe` card) with a
