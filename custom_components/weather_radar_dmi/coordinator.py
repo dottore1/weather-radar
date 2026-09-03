@@ -8,6 +8,8 @@ async_add_executor_job, never on the event loop.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import io
 import json
 import logging
@@ -41,6 +43,22 @@ from .render import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _trim_memory() -> None:
+    """Returns freed heap arenas to the OS after a poll's FFT/reprojection
+    work. CPython/glibc otherwise keep that memory reserved for reuse
+    within the process rather than releasing it — fine while actively
+    computing, but it means the process's RSS stays at its peak for the
+    whole ~2-min idle gap until the next poll too (see
+    PLAN-HA-COMPONENT.md's resource-usage benchmark). Best-effort: quietly
+    does nothing on non-glibc platforms (e.g. musl-based containers),
+    where skipping it doesn't hurt anything either."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass
 
 
 def _fetch_latest_items() -> list[dict]:
@@ -192,6 +210,7 @@ class WeatherRadarDmiCoordinator(DataUpdateCoordinator[list[dict]]):
             self.latest_frame_id = items[-1]["id"]
         payload.extend(self._get_forecast_entries(items))
         self._prune_png_cache({entry["id"] for entry in payload})
+        _trim_memory()
         return payload
 
     def _prune_png_cache(self, current_ids: set[str]) -> None:

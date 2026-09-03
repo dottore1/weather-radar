@@ -10,6 +10,8 @@ See PLAN-PERFORMANCE.md for the load-time optimizations implemented here.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import io
 import json
 import sys
@@ -190,6 +192,20 @@ def prune_png_cache(current_ids: set[str]) -> None:
             path.unlink(missing_ok=True)
 
 
+def _trim_memory() -> None:
+    """Returns freed heap arenas to the OS after a forecast recompute's
+    FFT/reprojection work. CPython/glibc otherwise keep that memory
+    reserved for reuse within the process rather than releasing it — fine
+    while actively computing, but it means RSS stays at its peak between
+    polls too (see PLAN-HA-COMPONENT.md's resource-usage benchmark).
+    Best-effort: quietly does nothing on non-glibc platforms."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass
+
+
 def _forecast_worker(items: list[dict], key: tuple) -> None:
     global _forecast_computing_key
     try:
@@ -198,6 +214,7 @@ def _forecast_worker(items: list[dict], key: tuple) -> None:
             _forecast_state["key"] = key
             _forecast_state["entries"] = entries
         prune_png_cache({it["id"] for it in items} | {e["id"] for e in entries})
+        _trim_memory()
     except Exception as e:
         sys.stderr.write(f"[dev-server] background forecast refresh failed: {e}\n")
     finally:
@@ -225,6 +242,7 @@ def get_forecast_entries(items: list[dict]) -> list[dict]:
             _forecast_state["key"] = key
             _forecast_state["entries"] = entries
         prune_png_cache({it["id"] for it in items} | {e["id"] for e in entries})
+        _trim_memory()
         return entries
 
     if not already_computing:
