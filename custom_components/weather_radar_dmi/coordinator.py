@@ -191,4 +191,21 @@ class WeatherRadarDmiCoordinator(DataUpdateCoordinator[list[dict]]):
         if items:
             self.latest_frame_id = items[-1]["id"]
         payload.extend(self._get_forecast_entries(items))
+        self._prune_png_cache({entry["id"] for entry in payload})
         return payload
+
+    def _prune_png_cache(self, current_ids: set[str]) -> None:
+        """Deletes cached PNGs whose frame id has scrolled out of the
+        current serving window. Without this, every ~10-min DMI publish
+        leaves one new observed-frame PNG and one new forecast-frame PNG
+        that never get cleaned up — unbounded growth (~35 GB/year measured
+        against live DMI data; see PLAN-HA-COMPONENT.md's resource-usage
+        benchmark). Safe to call unconditionally at the end of every poll:
+        DataUpdateCoordinator never runs two _poll_sync calls concurrently,
+        so there's no in-flight recompute this could race (contrast with
+        dev/server.py's prune_png_cache, which has to be more careful about
+        exactly when it runs because of that file's background-thread
+        refresh path)."""
+        for path in self.cache_dir.glob("*.png"):
+            if path.stem not in current_ids:
+                path.unlink(missing_ok=True)
