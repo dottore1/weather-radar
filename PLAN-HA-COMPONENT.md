@@ -76,3 +76,58 @@ Done here (no live HA available in this environment):
 Left to the user's own HA instance (confirmed available): installing via
 HACS, completing the config flow, confirming `h5py`/`pyproj` install
 cleanly, and that the card renders/updates/forecasts correctly live.
+
+## Test suite
+
+Added a real `tests/` suite (pytest) before recommending live install, per
+the user's request for stronger sanity checking:
+
+- `test_render.py`/`test_nowcast.py` run every assertion against **both**
+  `dev/` and `custom_components/weather_radar_dmi/` copies of the pipeline
+  (a parametrized `pipeline_impl` fixture) — any future drift between the
+  harness and the shipped port fails a specific `[dev]` or
+  `[custom_components]` test case rather than going unnoticed.
+- `test_dev_server.py` starts `dev/server.py`'s real `ThreadingHTTPServer`
+  against synthetic, network-free DMI data (`tests/synth.py` builds a
+  minimal but structurally real ODIM_H5 file using a plain lon/lat
+  "projection" so pixel<->geography math is exact and hand-checkable,
+  rather than needing real stereographic geodesy).
+- The HA layer (`config_flow`, `coordinator`, `http` views, `image`
+  entity, `__init__.py` setup/unload) is tested with
+  `pytest-homeassistant-custom-component` against the same synthetic
+  data — real coordinator polling, real config-entry setup/unload, real
+  HTTP views hit through `hass_client`.
+
+**Environment friction (Windows):** `pytest-homeassistant-custom-component`
+depends on the full `homeassistant` package, which pins `lru-dict==1.3.0`
+— a version with no prebuilt wheel for Python 3.13 on any platform, so it
+needs a C compiler to install. This machine has none, and installing the
+several-GB MSVC Build Tools for one small extension wasn't worth it.
+Resolved via WSL2 (already installed) instead: installed `uv` user-space
+(no sudo), then used `uv pip install --override tests/uv-overrides.txt` to
+force `lru-dict>=1.4.1` (full wheel coverage, otherwise a drop-in
+replacement) — no compiler needed at all. See `tests/uv-overrides.txt` and
+the README's "Running the tests" section.
+
+**Two real bugs the test suite caught** (both fixed, not just worked
+around):
+1. `hass.http.register_view(...)` in `__init__.py` assumed `hass.http`
+   already exists — true on any real running HA instance (core loads
+   `http` very early) but not guaranteed in the isolated test `hass`.
+   Fixed properly, not just in tests: added `"dependencies": ["http"]` to
+   `manifest.json`, making the requirement explicit and enforced by HA's
+   own bootstrap ordering. (`add_extra_js_url`'s similar dependency on the
+   `frontend` component was left as a soft test-side mock instead of a
+   hard manifest dependency — declaring `frontend` there would require the
+   separate `home-assistant-frontend` asset package for anything to load
+   it, real installs included, which is a much heavier ask than declaring
+   `http`.)
+2. `image.py`'s `WeatherRadarDmiImage` only set `_attr_image_last_updated`
+   inside `_handle_coordinator_update`, which fires on the coordinator's
+   *future* refreshes — not for data the coordinator already fetched
+   before the entity was even created (which is the normal case:
+   `async_setup_entry` awaits the coordinator's first refresh before
+   forwarding platforms). The entity would sit at `unknown` until the next
+   poll, up to `UPDATE_INTERVAL` (2 min) after setup. Fixed by seeding
+   `_last_frame_id`/`_attr_image_last_updated` from the coordinator's
+   already-fetched data in `__init__`.

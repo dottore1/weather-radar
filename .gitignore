@@ -1,5 +1,8 @@
 .venv/
+.venv-test/
+.venv-test-wsl/
 __pycache__/
 *.pyc
+.pytest_cache/
 dev/cache/
 dev/_scratch/

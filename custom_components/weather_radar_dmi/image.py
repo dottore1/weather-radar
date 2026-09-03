@@ -34,7 +34,15 @@ class WeatherRadarDmiImage(CoordinatorEntity[WeatherRadarDmiCoordinator], ImageE
         CoordinatorEntity.__init__(self, coordinator)
         ImageEntity.__init__(self, hass)
         self._attr_unique_id = f"{entry.entry_id}_latest_frame"
-        self._last_frame_id: str | None = None
+        # The coordinator's first refresh already ran (async_setup_entry
+        # awaits it before forwarding platforms), so latest_frame_id may
+        # already be populated by the time this entity is created —
+        # _handle_coordinator_update only fires on *future* refreshes, so
+        # without this the entity would sit at "unknown" until the
+        # coordinator's next poll, up to UPDATE_INTERVAL later.
+        self._last_frame_id: str | None = coordinator.latest_frame_id
+        if self._last_frame_id:
+            self._attr_image_last_updated = dt_util.utcnow()
 
     @callback
     def _handle_coordinator_update(self) -> None:
