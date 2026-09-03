@@ -19,10 +19,17 @@ def _hann2d(shape: tuple[int, int]) -> np.ndarray:
     return np.outer(wy, wx)
 
 
-def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray) -> tuple[int, int]:
+def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray,
+                    return_confidence: bool = False):
     """Returns (dy, dx) in pixels: the shift such that dbz_curr ~= dbz_prev
     shifted by (dy, dx). I.e. applying this same shift again extrapolates
-    one more step forward."""
+    one more step forward. With return_confidence=True, also returns a
+    peak-to-mean ratio of the correlation surface: how much the winning
+    shift stands out versus a flat/ambiguous surface. Low inside a large,
+    broad, relatively self-similar rain mass (many shifts look almost
+    equally plausible), high at a sharp, distinctive edge — see
+    estimate_motion_field's confidence-weighted blending, which is why
+    this exists."""
     a = dbz_prev.astype(np.float64)
     b = dbz_curr.astype(np.float64)
     a = a - a.mean()
@@ -52,6 +59,9 @@ def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray) -> tuple[int, int
     # that takes prev -> curr, hence the sign flip.
     dy = -(py - h // 2)
     dx = -(px - w // 2)
+    if return_confidence:
+        confidence = float(corr[py, px] / (corr.mean() + 1e-8))
+        return int(dy), int(dx), confidence
     return int(dy), int(dx)
 
 
@@ -146,12 +156,27 @@ TILE_MIN_VALID_PX = 400  # ~12% of a 180x180 tile; below this a tile's own
 # before smoothing, on top of the neighborhood median filter below.
 TILE_MAX_DISPLACEMENT_PX = 70
 # How much of a measured tile's own vector to trust vs. the global (whole-
-# frame) vector: 1.0 = fully independent per-tile motion (can look like the
-# sky "expanding" rather than moving — see estimate_motion_field's
+# frame) vector, at most: 1.0 = fully independent per-tile motion (can look
+# like the sky "expanding" rather than moving — see estimate_motion_field's
 # docstring), 0.0 = collapses back to one rigid global shift. 0.6 keeps
 # real per-region variation visible while anchoring everything to a shared
-# overall drift.
+# overall drift. This is a ceiling — the *actual* per-tile trust used is
+# this scaled down further by that tile's own confidence (see below).
 TILE_BLEND_ALPHA = 0.6
+
+# Confidence weighting: a tile deep inside a large, broad rain mass has weak
+# internal texture (many candidate shifts look almost equally plausible —
+# low peak-to-mean ratio from compute_motion), while a tile right at a
+# sharp rain/no-rain edge locks onto a confident, distinctive peak. Blending
+# every tile by the same fixed ratio doesn't distinguish these — verified
+# empirically (see PLAN-DMI-MIGRATION.md): large heavily-covered tiles
+# scored ~7-10, small sharp-edge tiles scored 45-190+. But a tiny sliver of
+# a tile (barely above TILE_MIN_VALID_PX) can also score artificially high
+# just because there's almost nothing for it to disagree with itself about
+# — so confidence alone isn't enough; trust also needs to scale with how
+# much actual data went into the estimate.
+TILE_CONF_LOW, TILE_CONF_HIGH = 7.0, 25.0   # peak/mean range: noise-floor -> clearly-confident
+TILE_DATA_SATURATE_PX = 3000  # combined (prev+curr) valid pixels at which the data-volume factor maxes out
 
 
 def _tile_starts(total: int, tile_size: int, step: int) -> list[int]:
@@ -218,39 +243,57 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
 
     dy_grid = np.full((len(y_starts), len(x_starts)), np.nan)
     dx_grid = np.full((len(y_starts), len(x_starts)), np.nan)
+    trust_grid = np.zeros((len(y_starts), len(x_starts)))  # per-tile blend weight, see below
     for iy, y0 in enumerate(y_starts):
         for ix, x0 in enumerate(x_starts):
             y1, x1 = y0 + tile_size, x0 + tile_size
             tv_prev = valid_prev[y0:y1, x0:x1]
             tv_curr = valid_curr[y0:y1, x0:x1]
-            if int(tv_prev.sum()) + int(tv_curr.sum()) < min_valid_px:
+            valid_px = int(tv_prev.sum()) + int(tv_curr.sum())
+            if valid_px < min_valid_px:
                 continue  # too little signal in this tile to trust a correlation
-            tdy, tdx = compute_motion(dbz_prev[y0:y1, x0:x1], dbz_curr[y0:y1, x0:x1])
+            tdy, tdx, conf = compute_motion(dbz_prev[y0:y1, x0:x1], dbz_curr[y0:y1, x0:x1],
+                                             return_confidence=True)
             if (tdy * tdy + tdx * tdx) ** 0.5 > TILE_MAX_DISPLACEMENT_PX:
                 continue  # implausible spike — treat like "no reliable signal"
             dy_grid[iy, ix], dx_grid[iy, ix] = tdy, tdx
+            # Two independent trust factors, multiplied: how sharply this
+            # tile's correlation peak stood out (low inside a broad, self-
+            # similar rain mass; see TILE_CONF_LOW/HIGH), and how much
+            # actual data it was measured from (guards against a tiny
+            # sliver of a tile scoring a spuriously sharp peak just because
+            # it has almost nothing to disagree with itself about).
+            conf_factor = np.clip((conf - TILE_CONF_LOW) / (TILE_CONF_HIGH - TILE_CONF_LOW), 0.0, 1.0)
+            data_factor = np.clip(valid_px / TILE_DATA_SATURATE_PX, 0.0, 1.0)
+            trust_grid[iy, ix] = conf_factor * data_factor
 
     # Smooth out single-tile noise (a tile can pass the magnitude clamp and
     # still be a spurious/wrong-direction outlier relative to its neighbors)
     # while the grid still distinguishes "real measurement" from "no data"
     # (NaN) — see _median_filter_grid's docstring for why this must happen
-    # before the blend/fallback steps below, not after.
+    # before the blend/fallback steps below, not after. trust_grid isn't
+    # smoothed — it's a per-tile confidence weight, not a value that needs
+    # spatial consistency with its neighbors.
     dy_grid = _median_filter_grid(dy_grid)
     dx_grid = _median_filter_grid(dx_grid)
 
     # Blend measured tiles *toward* the global vector rather than trusting
-    # them outright. Without this, a tile with a strong independent
-    # measurement sitting next to a tile that has none (and would otherwise
-    # jump straight to a possibly very different fallback value) creates a
-    # spatially inconsistent field — and warping by an inconsistent field
-    # doesn't translate a rain area as one piece, it stretches it (looks
-    # like the sky "expanding" instead of moving). Blending keeps every
-    # tile anchored to the same baseline drift, with only a bounded local
-    # deviation layered on top — real per-region character, but the whole
-    # field still moves together. blend_alpha=1 is the old "trust the tile
-    # outright" behavior; 0 collapses back to the single global vector.
-    dy_grid = np.where(np.isnan(dy_grid), np.nan, blend_alpha * dy_grid + (1 - blend_alpha) * fallback_dy)
-    dx_grid = np.where(np.isnan(dx_grid), np.nan, blend_alpha * dx_grid + (1 - blend_alpha) * fallback_dx)
+    # them outright, weighted by each tile's own trust score. Without this,
+    # a confidently-measured tile sitting next to a low-trust tile (which
+    # would otherwise jump straight to a possibly very different fallback
+    # value) creates a spatially inconsistent field — and warping by an
+    # inconsistent field doesn't translate a rain area as one piece, it
+    # stretches it (looks like the sky "expanding" instead of moving).
+    # Blending keeps every tile anchored to the same baseline drift, with
+    # only a bounded, trust-scaled local deviation layered on top: a sharp,
+    # data-rich edge tile gets to show close to its own independent motion,
+    # while a noisy/ambiguous interior tile mostly just follows the global
+    # drift like everything else. blend_alpha=1 + full trust reproduces the
+    # old "trust every tile outright" behavior; 0 collapses to one rigid
+    # global shift.
+    alpha_grid = blend_alpha * trust_grid
+    dy_grid = np.where(np.isnan(dy_grid), np.nan, alpha_grid * dy_grid + (1 - alpha_grid) * fallback_dy)
+    dx_grid = np.where(np.isnan(dx_grid), np.nan, alpha_grid * dx_grid + (1 - alpha_grid) * fallback_dx)
 
     # Whatever's still NaN (no real measurement anywhere in that tile's
     # neighborhood) gets the plain global vector — same as a fully-blended

@@ -225,6 +225,29 @@ motion field:
   away), but the system visibly moves as a whole again. Verified against
   real data: now/+30min/+90min frames show the pattern clearly relocating
   across frames, not just diffusing in place.
+- **Follow-up: large central masses still looked like they were "expanding"
+  while smaller edge features moved correctly.** More precise diagnosis
+  than the first blend fix addressed: verified empirically (a per-tile
+  peak-to-mean correlation-confidence scan against real data) that tiles
+  deep inside a large, heavily-raining mass genuinely produce *weaker*
+  correlation peaks than small tiles right at a sharp rain/no-rain edge —
+  a large, broad, locally self-similar interior gives phase correlation
+  multiple almost-equally-plausible shifts to choose from, while a
+  distinctive edge locks on confidently. The fixed 60/40 blend didn't
+  distinguish a confidently-measured tile from a noisy one. Confound found
+  in the same scan: a tile with only a tiny sliver of rain can score an
+  artificially *high* confidence purely because it has almost no content
+  to disagree with itself about — so confidence alone isn't a safe signal.
+  Fixed with two multiplied trust factors per tile — `compute_motion`'s
+  peak-to-mean ratio (`TILE_CONF_LOW`/`HIGH` = 7-25, calibrated against the
+  real-data scan) and how much valid data the tile actually had
+  (`TILE_DATA_SATURATE_PX` = 3000) — so a tile only gets close to full
+  `TILE_BLEND_ALPHA` trust when it's *both* confidently- and
+  substantially-measured; a big ambiguous interior tile or a barely-there
+  sliver both get pulled back toward the shared global drift instead.
+  Verified against real data: the large mass now shows directional
+  streaking/stretching consistent with the rest of the field's motion,
+  not uniform growth in place.
 - **Bug found and fixed** (frames weren't moving at all): a naive whole-field
   FFT phase correlation on two real consecutive composites returned exactly
   `(0, 0)` even though the frames genuinely differed. Root cause: radar
