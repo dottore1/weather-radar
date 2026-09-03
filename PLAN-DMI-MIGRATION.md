@@ -298,6 +298,39 @@ motion field:
     forecast that looks mostly stable is the *honest* answer here —
     inventing dramatic movement the data doesn't support would be less
     accurate, not more, even though it looks less dynamic.
+- **Follow-up: on a day with a strong global drift, "the skies move in the
+  same direction" — the original complaint the tiling system exists to
+  fix, back again through a new mechanism.** Root cause: `TILE_MAX_DEVIATION_PX`
+  was a *fixed* pixel cap (15px). Reasonable when the global vector is
+  small (the case it was built for), but the same fixed number becomes a
+  much tighter *angular* leash as the global vector grows — verified
+  directly: with a real global vector of magnitude 34px, a 15px cap only
+  allows ~20-25° of directional swing (measured actual field: direction
+  deviation std of just 1.0°, essentially uniform). That's exactly why
+  per-region character had vanished again, even though the tile mechanism
+  itself was still correctly wired (confirmed via `grep` that
+  `server.py` still calls `estimate_motion_field`/`forecast_steps_from_field`,
+  not the plain global-only functions).
+  - Fixed by making the cap scale with the global vector's own magnitude
+    instead of being fixed: `TILE_DEVIATION_FLOOR_PX=15` (handles
+    near-zero global, same as before), `TILE_DEVIATION_FRACTION=0.6`
+    (scales with a strong drift), `TILE_DEVIATION_CEILING_PX=40` (still
+    bounded for a very fast system). `estimate_motion_field`'s
+    `max_deviation_px` defaults to `None`, meaning "compute dynamically
+    from the global vector via `_tile_max_deviation`"; an explicit value
+    still overrides it, which the self-test uses to isolate the
+    underlying per-tile mechanism from this cap.
+  - Honest finding while verifying: on the *specific* real data that
+    exposed this (global magnitude 34), removing the cap entirely (with
+    full trust) revealed one extreme outlier tile disagreeing by -157°
+    (clearly spurious noise, correctly worth suppressing) but otherwise
+    not much real moderate variation underneath — today's actual weather
+    is apparently a fairly coherent, uniformly-advecting front. So the
+    dynamic cap is correctly calibrated (15px → 20.5px allowance for this
+    magnitude) and will matter more on a day with genuine local
+    disagreement in the data; its *visible* effect on this particular
+    real-world example was modest because there wasn't much real
+    diversity to reveal, not because the fix fell short.
 - **Bug found and fixed: the last forecast frame jumped noticeably more
   than the smooth progression of the rest.** Cause: forecast PNGs were
   cached to disk keyed only by absolute future timestamp
