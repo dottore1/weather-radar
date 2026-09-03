@@ -258,3 +258,40 @@ the way it does with glibc's arena-based heap (the actual problem
 `_trim_memory`'s `malloc_trim` attempt correctly no-ops there. v0.1.1's
 fix is the complete, correct behavior on this platform, not a partial
 workaround — no follow-up change needed.
+
+## v0.1.2: card couldn't authenticate its own API calls
+
+First real card install (after v0.1.1) surfaced two separate, unrelated
+problems in sequence:
+
+1. **`Custom element doesn't exist: weather-radar-dmi-card`, only in
+   Microsoft Edge.** The JS fetched fine (200, correct Content-Type,
+   correct bytes — confirmed via direct `fetch()` + content check),
+   `import()` of it resolved without error, yet
+   `customElements.get('weather-radar-dmi-card')` stayed `undefined` —
+   even via HA's own standard manual Lovelace-resource loading path, not
+   just our `add_extra_js_url` auto-registration. Switching to Chrome
+   fixed it immediately. Not a bug in this integration — some Edge
+   privacy/security feature was silently neutering the custom element
+   registration for this specific page. No code change; noting it here
+   in case it recurs for another Edge user.
+
+2. **`GET /api/weather_radar_dmi/frames 401 (Unauthorized)`** — a real
+   bug, once past #1. Home Assistant's frontend authenticates API calls
+   with a bearer token (`Authorization: Bearer <token>`), not cookies.
+   The card's `fetch()` calls were plain and unauthenticated — worked
+   against the local dev harness (`dev/server.py`, no auth at all) but
+   never against real HA. The Python view tests never caught this because
+   `pytest-homeassistant-custom-component`'s `hass_client` fixture is
+   already authenticated — there's no test coverage for the card's own
+   browser-side JS at all, since the pytest suite can't exercise it.
+   Fixed: the JSON frames endpoint now goes through `hass.callApi()` (the
+   idiomatic HA pattern — handles the token and base URL automatically);
+   the PNG frames, used as `<img src>` which can't carry a custom header
+   at all, are now fetched as authenticated blobs and handed to the
+   `<img>` via `URL.createObjectURL()`, with the object URL revoked when
+   a frame's element is removed (window scrolled past) to avoid leaking
+   blob references over a long-running dashboard session. Verified
+   end-to-end against a mock auth-gated server (401 without the header,
+   200 with it) before shipping — real blob URLs assigned, card renders,
+   no errors. Bumped to v0.1.2.

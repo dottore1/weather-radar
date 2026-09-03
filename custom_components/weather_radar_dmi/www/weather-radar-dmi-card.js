@@ -79,6 +79,20 @@ function fmtLocal(iso) {
   return new Date(iso).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
 }
 
+// HA's frontend authenticates API calls with a bearer token, not cookies —
+// a plain same-origin fetch() (which is all a browser can attach to an
+// <img src>) gets a 401. hass.callApi() handles the token/base-URL for
+// JSON calls; for the PNG frames (used as <img src>, which can't carry a
+// custom Authorization header at all) we fetch the bytes ourselves and
+// hand the element an object URL instead.
+async function fetchAuthedBlob(hass, path) {
+  const res = await fetch(path, {
+    headers: { Authorization: `Bearer ${hass.auth.data.access_token}` },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
+}
+
 const TEMPLATE = `
 <style>
   :host{ display:block; }
@@ -223,10 +237,9 @@ class WeatherRadarDmiCard extends HTMLElement {
   }
 
   async _loadFrames() {
+    if (!this._hass) return; // hass not attached yet — the next poll will retry
     try {
-      const res = await fetch('/api/weather_radar_dmi/frames');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const list = await res.json();
+      const list = await this._hass.callApi('GET', 'weather_radar_dmi/frames');
       this._statusEl.textContent = '';
       const nObs = list.filter(it => !it.forecast).length;
 
@@ -246,7 +259,10 @@ class WeatherRadarDmiCard extends HTMLElement {
         }
         return { ...item, el };
       });
-      existingById.forEach(el => el.remove()); // fell out of the window
+      existingById.forEach(el => {
+        if (el.dataset.objectUrl) URL.revokeObjectURL(el.dataset.objectUrl);
+        el.remove(); // fell out of the window
+      });
       this._nowIdx = nObs - 1;
 
       const lastIdx = this._frames.length - 1;
@@ -273,18 +289,29 @@ class WeatherRadarDmiCard extends HTMLElement {
       // the browser's initial connection slots.
       const priorityFrame = this._frames[targetIdx];
       if (priorityFrame && !priorityFrame.el.src) {
-        priorityFrame.el.fetchPriority = 'high';
-        priorityFrame.el.src = `/api/weather_radar_dmi/frame/${priorityFrame.id}.png`;
+        this._setFrameSrc(priorityFrame.el, priorityFrame.id);
       }
       setTimeout(() => {
         this._frames.forEach(f => {
-          if (!f.el.src) f.el.src = `/api/weather_radar_dmi/frame/${f.id}.png`;
+          if (!f.el.src) this._setFrameSrc(f.el, f.id);
         });
       }, 0);
 
       this._show(targetIdx);
     } catch (e) {
       this._statusEl.textContent = 'Kunne ikke hente radardata: ' + e;
+    }
+  }
+
+  async _setFrameSrc(el, frameId) {
+    try {
+      const blob = await fetchAuthedBlob(this._hass, `/api/weather_radar_dmi/frame/${frameId}.png`);
+      const url = URL.createObjectURL(blob);
+      if (el.dataset.objectUrl) URL.revokeObjectURL(el.dataset.objectUrl);
+      el.dataset.objectUrl = url;
+      el.src = url;
+    } catch (e) {
+      // leave el.src unset — the next poll will retry
     }
   }
 
