@@ -208,6 +208,23 @@ motion field:
   per-pixel field, better at rotation/shear, heavier dependency), pySTEPS
   (a proper nowcasting library with growth/decay modeling and ensemble
   uncertainty — closest to "how the field actually does it", biggest lift).
+- **Follow-up bug: forecast looked like the sky "expanding" rather than
+  moving.** Cause: measured tiles and fallback (no-signal) tiles could sit
+  right next to each other with very different vectors — a real tile inside
+  a storm's own independent measurement next to a neighboring tile that had
+  no signal and jumped straight to the (possibly quite different) global
+  fallback. Warping by a spatially *inconsistent* field doesn't translate a
+  rain area as one piece; region boundaries where the field disagrees with
+  itself stretch instead. Fixed by blending every measured tile *toward*
+  the global vector (`TILE_BLEND_ALPHA = 0.6`) rather than trusting it
+  outright, so the whole field shares one common drift with only a bounded
+  local deviation layered on top — real per-region character survives
+  (confirmed via a re-run of the opposing-cells self-test, now checking
+  that the two regions land on either side of the global vector rather than
+  hitting their exact true values, which blending intentionally trades
+  away), but the system visibly moves as a whole again. Verified against
+  real data: now/+30min/+90min frames show the pattern clearly relocating
+  across frames, not just diffusing in place.
 - **Bug found and fixed** (frames weren't moving at all): a naive whole-field
   FFT phase correlation on two real consecutive composites returned exactly
   `(0, 0)` even though the frames genuinely differed. Root cause: radar
