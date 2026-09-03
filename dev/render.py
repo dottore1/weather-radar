@@ -105,17 +105,28 @@ def reproject_to_dbz_grid(decoded: dict, out_w: int, out_h: int,
     return dbz, valid
 
 
-def render_png_bytes(path_or_bytes) -> bytes:
+def dbz_grid_for(path_or_bytes) -> tuple:
+    """Decode + reproject an HDF5 composite straight to our output dbz/valid
+    grid — the shared representation both the observed-frame renderer and
+    the advection nowcast (dev/nowcast.py) work with."""
     decoded = decode_h5(path_or_bytes)
-    dbz, valid = reproject_to_dbz_grid(
+    return reproject_to_dbz_grid(
         decoded, OUT_WIDTH, OUT_HEIGHT,
         OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX,
     )
+
+
+def png_from_grid(dbz, valid) -> bytes:
     rgba = colorize(dbz, valid)
     img = Image.fromarray(rgba, mode="RGBA")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def render_png_bytes(path_or_bytes) -> bytes:
+    dbz, valid = dbz_grid_for(path_or_bytes)
+    return png_from_grid(dbz, valid)
 
 
 if __name__ == "__main__":

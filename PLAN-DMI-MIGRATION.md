@@ -119,6 +119,52 @@ DMI API (HDF5, server-to-server — no CORS issue)
     made" note, since we do recolor/reproject the data) to the README and
     somewhere visible in the UI.
 
+## Forecast: resolved
+
+Investigated three options for the ~90 min forecast (matching what DMI's own
+`friedata` docs describe: *"en fremskrivning af, hvor nedbøren forventes at
+bevæge sig hen de kommende 90 minutter"*):
+
+1. **DMI's own nowcast** (whatever powers their consumer radar page) — not
+   exposed via the Open Data API (confirmed: the Radar Data API's
+   `collections` list is only `composite`/`pseudoCappi`/`volume`, and the
+   dataset's official ISO metadata record lists no image/forecast
+   distribution format). Reverse-engineering it would put us right back in
+   undocumented-private-API territory, just against DMI instead of TV2 —
+   defeats the point of this migration.
+2. **HARMONIE NWP precipitation forecast** (`total-precipitation` /
+   `rain-precipitation-rate` parameters, confirmed present in the Forecast
+   Data EDR API) — real DMI Open Data, but hourly-stepped only, and a test
+   `cube` grid query over all of Denmark returned just 3×2 data points
+   (~130km+ spacing) — far too coarse to render as a map. Would need more
+   exploratory work against a sparsely-documented, rate-limited endpoint to
+   determine if/how a usable-resolution grid is obtainable.
+3. **Self-computed advection nowcast (chosen)** — estimate a single global
+   motion vector between the last two observed composite frames via FFT
+   phase correlation, then extrapolate that motion forward in 10-min steps.
+   Standard "Lagrangian persistence" nowcasting technique, exactly what
+   short-lead-time forecasting is normally done with anyway (more accurate
+   than NWP at 0-2h lead times) — and circumstantial evidence suggests this
+   is close to what DMI/TV2's own nowcast actually is: TV2's forecast
+   images match the observed ones' resolution/10-min cadence exactly, which
+   is the signature of echo extrapolation, not a coarse NWP model like
+   HARMONIE.
+
+- [x] **Implemented**: `dev/nowcast.py` (motion estimation + extrapolation,
+  sign convention verified via a synthetic-shift self-test) and wired into
+  `dev/server.py` (`build_forecast()`, `/api/frames` now returns observed +
+  9 forecast entries spanning 90 min, `/api/frame/forecast-<ts>.png`).
+  `dev/index.html` shows the observed/forecast split on the timeline track
+  (matching the original TV2-card design) with distinct "Observeret /
+  Seneste / Prognose" labeling. Verified end-to-end against live data —
+  motion estimate on a real frame pair was physically plausible (~9.75
+  km/10min ≈ 58 km/h eastward, consistent with typical frontal-system
+  speeds), and forecast frames render correctly through the full HTTP path.
+- Known limitation, inherent to the technique: single global motion vector
+  (no per-cell/optical-flow motion field, no growth/decay modeling) — fine
+  for a first pass, degrades toward the end of the 90-min window, and
+  won't match DMI/TV2's own (unknown, private) nowcast algorithm exactly.
+
 ## Suggested order of work
 
 Start with step 1 (local harness) — it's the part you explicitly want to
