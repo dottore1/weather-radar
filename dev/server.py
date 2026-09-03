@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-from render import render_png_bytes, dbz_grid_for, png_from_grid  # noqa: E402
+from render import render_png_bytes, dbz_grid_for, dbz_grid_for_work, crop_to_display, png_from_grid  # noqa: E402
 from nowcast import estimate_motion, forecast_steps_from_motion  # noqa: E402
 
 PORT = 8765
@@ -66,6 +66,14 @@ def get_grid(item: dict):
     return dbz_grid_for(io.BytesIO(h5_bytes))
 
 
+def get_grid_work(item: dict):
+    """Padded-working-box version of get_grid, for the forecast pipeline —
+    see dbz_grid_for_work in render.py."""
+    import io
+    h5_bytes = _download(item["asset"]["data"]["href"])
+    return dbz_grid_for_work(io.BytesIO(h5_bytes))
+
+
 MOTION_BASELINE_STEPS = 2  # estimate motion over a 20-min gap (items[-3] -> items[-1]),
                            # not the immediately-preceding 10-min pair — a short baseline
                            # is noise-dominated and prone to spuriously reading as ~0
@@ -78,8 +86,12 @@ def build_forecast(items: list[dict]) -> list[dict]:
     if len(items) <= MOTION_BASELINE_STEPS:
         return []
     baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
-    dbz_base, valid_base = get_grid(baseline_item)
-    dbz_curr, valid_curr = get_grid(curr_item)
+    # Padded working grids (see render.py's FCST_MARGIN_*), not the plain
+    # display grids: shifting the field forward reveals edge pixels, and we
+    # want those to pull real data from the padding rather than come up
+    # blank/transparent.
+    dbz_base, valid_base = get_grid_work(baseline_item)
+    dbz_curr, valid_curr = get_grid_work(curr_item)
     dy_baseline, dx_baseline = estimate_motion(dbz_base, valid_base, dbz_curr, valid_curr)
     # per-10-min-step motion: the baseline spans MOTION_BASELINE_STEPS steps
     dy = round(dy_baseline / MOTION_BASELINE_STEPS)
@@ -88,7 +100,8 @@ def build_forecast(items: list[dict]) -> list[dict]:
 
     base_time = datetime.fromisoformat(curr_item["properties"]["datetime"].replace("Z", "+00:00"))
     entries = []
-    for i, (dbz, valid) in enumerate(steps, start=1):
+    for i, (dbz_work, valid_work) in enumerate(steps, start=1):
+        dbz, valid = crop_to_display(dbz_work, valid_work)
         t = base_time + timedelta(minutes=10 * i)
         fid = "forecast-" + t.strftime("%Y%m%d%H%M")
         cache_path = CACHE_DIR / f"{fid}.png"
