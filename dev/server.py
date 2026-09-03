@@ -171,6 +171,25 @@ _forecast_state = {"key": None, "entries": []}
 _forecast_computing_key = None
 
 
+def prune_png_cache(current_ids: set[str]) -> None:
+    """Deletes cached PNGs whose frame id has scrolled out of the current
+    serving window. Without this, every ~10-min DMI publish leaves one new
+    observed-frame PNG and one new forecast-frame PNG that never get
+    cleaned up — unbounded growth (~35 GB/year measured against live DMI
+    data; see PLAN-HA-COMPONENT.md's resource-usage benchmark).
+
+    Only ever called right after a fresh (items, forecast) window has been
+    fully computed and is about to become authoritative (see the
+    first_ever branch and _forecast_worker below) — never from a
+    per-request handler. Pruning against a *stale* id set while a
+    background recompute is still in flight would delete that recompute's
+    just-written output before _forecast_state is updated to include it,
+    turning into self-inflicted cache misses."""
+    for path in CACHE_DIR.glob("*.png"):
+        if path.stem not in current_ids:
+            path.unlink(missing_ok=True)
+
+
 def _forecast_worker(items: list[dict], key: tuple) -> None:
     global _forecast_computing_key
     try:
@@ -178,6 +197,7 @@ def _forecast_worker(items: list[dict], key: tuple) -> None:
         with _forecast_lock:
             _forecast_state["key"] = key
             _forecast_state["entries"] = entries
+        prune_png_cache({it["id"] for it in items} | {e["id"] for e in entries})
     except Exception as e:
         sys.stderr.write(f"[dev-server] background forecast refresh failed: {e}\n")
     finally:
@@ -204,6 +224,7 @@ def get_forecast_entries(items: list[dict]) -> list[dict]:
         with _forecast_lock:
             _forecast_state["key"] = key
             _forecast_state["entries"] = entries
+        prune_png_cache({it["id"] for it in items} | {e["id"] for e in entries})
         return entries
 
     if not already_computing:

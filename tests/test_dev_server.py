@@ -115,3 +115,21 @@ def test_repeat_frames_poll_reuses_the_cached_forecast(dev_server):
     with urllib.request.urlopen(f"{base_url}/api/frames") as resp:
         second = json.loads(resp.read())
     assert first == second
+
+
+def test_frames_poll_prunes_stale_cached_pngs(dev_server):
+    """PNGs left over from a frame id that's no longer in the current
+    serving window should get cleaned up once the window is known (see
+    prune_png_cache's docstring in dev/server.py — without this, disk
+    usage grows unbounded, ~35 GB/year on real data)."""
+    base_url, module = dev_server
+    stale_path = module.CACHE_DIR / "stale-frame-from-an-old-window.png"
+    stale_path.write_bytes(b"not a real png, just needs to exist")
+
+    with urllib.request.urlopen(f"{base_url}/api/frames") as resp:
+        payload = json.loads(resp.read())
+
+    assert not stale_path.exists()
+    current_ids = {entry["id"] for entry in payload}
+    remaining = {p.stem for p in module.CACHE_DIR.glob("*.png")}
+    assert remaining <= current_ids

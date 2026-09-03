@@ -131,3 +131,50 @@ around):
    poll, up to `UPDATE_INTERVAL` (2 min) after setup. Fixed by seeding
    `_last_frame_id`/`_attr_image_last_updated` from the coordinator's
    already-fetched data in `__init__`.
+
+## Resource-usage benchmark
+
+Measured against **real, live DMI data** (not synthetic) from inside the
+WSL venv, since that already had numpy/h5py/pyproj/Pillow installed. Ran
+the actual pipeline primitives (not through HA) to isolate the compute
+cost itself; repeated the forecast computation 6x in one process to
+distinguish a real plateau from a leak before trusting any number.
+
+- **Memory**: baseline process ~60-75 MB; after one full poll cycle (13
+  observed frames + motion field + 9-step forecast), RSS climbs to
+  ~370-515 MB then **plateaus** (confirmed via 6 repeated cycles: RSS
+  stabilized after the 2nd and stayed flat) — this is glibc/numpy holding
+  transient FFT/reprojection buffers rather than returning them to the OS,
+  not a leak. The persistent piece (decoded-HDF5 cache, correctly pruned
+  to the current window) is ~3.3 MB/frame x 13 ~= 43 MB. Practical
+  takeaway: budget **~400-500 MB of headroom**, worth knowing on a
+  Raspberry Pi-class HA install.
+- **CPU/time**: cold start (nothing cached yet) ~20s, mostly
+  downloading+decoding 13 HDF5 files. Steady-state poll: ~3-4s of compute
+  every 2 min when genuinely new data arrived — roughly 2-3% of one core
+  on average.
+- **Disk — found and fixed a real bug**: nothing pruned the PNG cache.
+  Every ~10 min (DMI's real publish cadence) leaves exactly one new
+  observed-frame PNG (~344 KB) and one new forecast-frame PNG (~316 KB,
+  since forecast filenames are keyed by absolute target timestamp — 8 of
+  every 9 get overwritten in place as `curr` advances, only 1 is
+  genuinely new) that never got cleaned up: **~95 MB/day, ~35 GB/year,
+  unbounded**. Fixed with `_prune_png_cache` (coordinator.py) /
+  `prune_png_cache` (dev/server.py): delete any cached PNG whose frame id
+  has scrolled out of the current serving window.
+  - `coordinator.py`: safe to prune unconditionally at the end of every
+    `_poll_sync` — `DataUpdateCoordinator` never runs two polls
+    concurrently, so there's nothing to race.
+  - `dev/server.py` needed more care: it serves concurrent HTTP requests
+    and has a background-thread forecast refresh (see
+    `get_forecast_entries`'s docstring). Pruning from a per-request
+    handler against a *stale* id set could delete a background recompute's
+    just-written output before `_forecast_state` is updated to include
+    it — self-inflicted cache misses. Fixed by pruning only from the two
+    places a fresh window is fully computed and about to become
+    authoritative (`_forecast_worker`, and the `first_ever` synchronous
+    path), never from the request handler itself.
+  - Regression tests: `test_frames_poll_prunes_stale_cached_pngs` (dev
+    server) and `test_png_cache_is_pruned_of_stale_frame_ids`
+    (coordinator) — write a bogus stale PNG, poll, assert it's gone and
+    everything remaining belongs to the current window.
