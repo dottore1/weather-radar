@@ -30,8 +30,16 @@ def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray,
     equally plausible), high at a sharp, distinctive edge — see
     estimate_motion_field's confidence-weighted blending, which is why
     this exists."""
-    a = dbz_prev.astype(np.float64)
-    b = dbz_curr.astype(np.float64)
+    # float32/complex64 rather than the numpy FFT default of float64/
+    # complex128: this is peak-finding on a correlation surface, not
+    # precision-sensitive science, and this array is the single biggest
+    # transient allocation in a poll cycle (see PLAN-HA-COMPONENT.md's
+    # resource-usage benchmark) — halving it directly halves that peak.
+    # numpy's fft2 preserves the input's precision family (float32 in ->
+    # complex64 out), so casting here is enough to keep everything below
+    # at half width.
+    a = dbz_prev.astype(np.float32)
+    b = dbz_curr.astype(np.float32)
     a = a - a.mean()
     b = b - b.mean()
 
@@ -41,7 +49,11 @@ def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray,
     # correlation and pull the estimate toward zero shift even when the
     # actual rain clearly moved. Taper toward the array edges to suppress
     # that (standard fix for edge artifacts in phase correlation).
-    window = _hann2d(a.shape)
+    window = _hann2d(a.shape).astype(np.float32)  # np.hanning is float64 by
+                                                    # default; cast or the
+                                                    # multiply below upcasts
+                                                    # a/b straight back to
+                                                    # float64.
     a = a * window
     b = b * window
 

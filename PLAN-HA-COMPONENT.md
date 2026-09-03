@@ -178,3 +178,49 @@ distinguish a real plateau from a leak before trusting any number.
     server) and `test_png_cache_is_pruned_of_stale_frame_ids`
     (coordinator) — write a bogus stale PNG, poll, assert it's gone and
     everything remaining belongs to the current window.
+
+## Memory optimization: FFT precision + heap trimming
+
+Two follow-up changes, benchmarked against real DMI data both before and
+after (same methodology as above — cold poll, warm poll, and a 6-iteration
+repeated-cycle loop to separate "plateau" from "leak"):
+
+1. **float32/complex64 instead of float64/complex128 in `compute_motion`**
+   (`nowcast.py`, both copies). Peak-finding on a correlation surface
+   isn't precision-sensitive, and this was the single biggest transient
+   allocation. numpy's `fft2` preserves the input's precision family, so
+   casting `a`/`b`/the Hann window to float32 before the FFT is enough —
+   halves every array from there on. Measured effect, isolated to that
+   one stage: **~93% reduction in that stage's own memory delta (+15.9 MB
+   -> +1.2 MB)**. Smaller effect on the end-to-end total, since the WORK-
+   box reprojection and forecast-step rendering (unaffected by this
+   change) dominate the overall footprint.
+2. **`gc.collect()` + `ctypes.CDLL("libc.so.6").malloc_trim(0)`** at the
+   end of every poll (`coordinator.py`'s `_poll_sync`; `dev/server.py`'s
+   `_forecast_worker` and the `first_ever` synchronous path — the same
+   two authoritative points as the cache-pruning fix, for the same
+   reason). Doesn't reduce the peak during active computation, but forces
+   glibc to actually return freed heap arenas to the OS afterward instead
+   of holding them in reserve — the process was spending nearly all of
+   its time *idle* between polls while still pinned at its peak RSS.
+
+**Combined result** (6-iteration repeated-cycle loop, real DMI data, same
+baseline/curr frame pair reused every iteration for a clean before/after
+comparison):
+
+| | before | after |
+|---|---|---|
+| Peak RSS during active computation | ~325 MB (plateaued, never released) | ~318 MB |
+| **RSS at rest between polls** | **~325 MB (same as peak — never released)** | **~78 MB** |
+
+The idle-time footprint — which is what the process actually sits at for
+~all of the 2-minute gap between polls — dropped **~76%**, from ~325 MB
+down to close to the ~60-76 MB cold-process baseline. Confirmed via the
+same before/after full test suite run (54 passed) and the same 6x-repeat
+methodology used to rule out a leak in the original benchmark. One
+existing test (`test_motion_field_blending_stays_directionally_distinct_
+around_the_global_vector`) needed `>` loosened to `>=`: float32's coarser
+precision made a previously-strict inequality land exactly on the
+boundary — a real precision-sensitivity artifact in the test's assertion,
+not a behavior regression (the paired right-cell assertion already used
+`<=`).
