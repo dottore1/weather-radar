@@ -196,7 +196,10 @@ function setPlaying(p) {
   playing = p;
   playBtn.textContent = p ? 'Pause' : 'Play';
   clearInterval(playTimer);
-  if (p) playTimer = setInterval(() => show((sliderValue + 1) % frames.length), 600);
+  if (p) {
+    show(0); // always restart playback from the oldest observed frame
+    playTimer = setInterval(() => show((sliderValue + 1) % frames.length), 600);
+  }
 }
 playBtn.onclick = () => setPlaying(!playing);
 slider.oninput = () => { setPlaying(false); show(+slider.value); };
