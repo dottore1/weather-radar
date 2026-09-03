@@ -26,7 +26,7 @@ from render import (  # noqa: E402
     OUT_WIDTH, OUT_HEIGHT, OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX,
     WORK_WIDTH, WORK_HEIGHT, WORK_LON_MIN, WORK_LON_MAX, WORK_LAT_MIN, WORK_LAT_MAX,
 )
-from nowcast import estimate_motion, forecast_steps_from_motion  # noqa: E402
+from nowcast import estimate_motion_field, forecast_steps_from_field  # noqa: E402
 
 PORT = 8765
 ITEMS_URL = (
@@ -122,10 +122,14 @@ def _compute_forecast_sync(items: list[dict]) -> list[dict]:
     baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
     dbz_base, valid_base = get_grid_work(baseline_item)
     dbz_curr, valid_curr = get_grid_work(curr_item)
-    dy_baseline, dx_baseline = estimate_motion(dbz_base, valid_base, dbz_curr, valid_curr)
-    dy = round(dy_baseline / MOTION_BASELINE_STEPS)
-    dx = round(dx_baseline / MOTION_BASELINE_STEPS)
-    steps = forecast_steps_from_motion(dbz_curr, valid_curr, dy, dx, FCST_FRAMES)
+    # Piecewise (tile-based) motion field instead of one global vector — see
+    # dev/nowcast.py and PLAN-DMI-MIGRATION.md for why: a single vector can
+    # only slide the whole frame rigidly, and can't represent different
+    # regions of the sky moving differently.
+    dy_field_baseline, dx_field_baseline = estimate_motion_field(dbz_base, valid_base, dbz_curr, valid_curr)
+    dy_field = dy_field_baseline / MOTION_BASELINE_STEPS
+    dx_field = dx_field_baseline / MOTION_BASELINE_STEPS
+    steps = forecast_steps_from_field(dbz_curr, valid_curr, dy_field, dx_field, FCST_FRAMES)
 
     base_time = datetime.fromisoformat(curr_item["properties"]["datetime"].replace("Z", "+00:00"))
     entries = []

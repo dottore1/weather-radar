@@ -160,10 +160,54 @@ bevæge sig hen de kommende 90 minutter"*):
   motion estimate on a real frame pair was physically plausible (~9.75
   km/10min ≈ 58 km/h eastward, consistent with typical frontal-system
   speeds), and forecast frames render correctly through the full HTTP path.
-- Known limitation, inherent to the technique: single global motion vector
-  (no per-cell/optical-flow motion field, no growth/decay modeling) — fine
-  for a first pass, degrades toward the end of the 90-min window, and
-  won't match DMI/TV2's own (unknown, private) nowcast algorithm exactly.
+- ~~Known limitation, inherent to the technique: single global motion vector~~
+  **Superseded** — see "Piecewise motion field" below. Still true regardless
+  of motion-estimation approach: no growth/decay modeling, degrades toward
+  the end of the 90-min window, won't match DMI/TV2's own (unknown, private)
+  nowcast algorithm exactly.
+
+### Piecewise (tile-based) motion field
+
+The single-global-vector nowcast above visibly looked like "the whole sky
+slides in one direction" — because that's literally what it did. Real
+weather doesn't move as one rigid sheet (a front over Jylland can move
+differently than a cell over Sjælland). Replaced with a spatially-varying
+motion field:
+
+- `estimate_motion_field()` (`dev/nowcast.py`) runs the same per-tile FFT
+  phase correlation independently across overlapping 180px tiles (60px
+  overlap), then interpolates the sparse per-tile vectors into a smooth
+  per-pixel field via bilinear upsampling (PIL, no new dependency).
+- `warp_by_field()` does semi-Lagrangian backward sampling — each output
+  pixel looks up its *own local* velocity and pulls content from where it
+  came from, instead of one rigid shift for the whole frame.
+- Verified via a synthetic self-test with two cells moving in *opposite*
+  directions (something a global vector fundamentally cannot represent — it
+  collapsed to picking up only one cell's motion and got the other
+  completely wrong); the field-based estimate recovered both correctly.
+- **Needed real tuning to be usable**, not just "more sophisticated in
+  theory": individual small tiles are noisier than a full-frame correlation
+  and can lock onto spurious/aliased peaks, which extrapolation over 9 steps
+  amplified into visible streak artifacts on real data. Fixed with (1) a
+  magnitude clamp on implausible single-tile displacements (~120 km/h
+  ceiling) and (2) a NaN-aware neighborhood median filter over the tile
+  grid — applied *before* filling gaps with the global-vector fallback,
+  since smoothing a real measurement against neighboring fallback
+  placeholders (rather than other real measurements) was actively wrong and
+  broke the opposing-cells self-test the first time around. A faint minor
+  streak artifact still remains in one small area on real data — better,
+  not perfect; a candidate for further tuning (larger filter neighborhood,
+  or per-tile confidence weighting) if it's still noticeable in practice.
+- Cost: field estimation + warping adds real time to the (still
+  background-refreshed, per PLAN-PERFORMANCE.md) forecast computation —
+  measured ~1.1s added on top of the ~0.35s global-vector version on real
+  data. Doesn't affect warm `/api/frames` latency, only how long the
+  background refresh takes to complete after new DMI data appears.
+- Other options considered but not implemented (still available if this
+  needs to go further): dense optical flow (e.g. OpenCV Farneback — a real
+  per-pixel field, better at rotation/shear, heavier dependency), pySTEPS
+  (a proper nowcasting library with growth/decay modeling and ensemble
+  uncertainty — closest to "how the field actually does it", biggest lift).
 - **Bug found and fixed** (frames weren't moving at all): a naive whole-field
   FFT phase correlation on two real consecutive composites returned exactly
   `(0, 0)` even though the frames genuinely differed. Root cause: radar
