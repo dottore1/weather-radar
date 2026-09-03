@@ -28,7 +28,8 @@
   input[type=range]::-moz-range-track{background:transparent}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid #2b6fce;margin-top:2px}
   input[type=range]::-moz-range-thumb{width:8px;height:8px;border-radius:50%;background:#fff;border:3px solid #2b6fce}
-  .ticks{display:flex;justify-content:space-between;font-size:11px;color:#9aa7b1;margin-top:4px}
+  .ticks{position:relative;height:14px;font-size:11px;color:#9aa7b1;margin-top:4px}
+  .ticks span{position:absolute;top:0;white-space:nowrap}
   .status{margin-top:10px;font-size:12px;color:#9aa7b1;white-space:pre-wrap}
   a{color:#5ea1f2}
 </style>
@@ -195,12 +196,17 @@ async function loadFrames() {
 
   const lastIdx = frames.length - 1;
   slider.max = lastIdx;
-  ticksEl.innerHTML = [0, nowIdx, lastIdx]
-    .map(i => `<span${i === nowIdx ? ' style="color:#5ea1f2"' : ''}>${fmtLocal(frames[i].time)}</span>`).join('');
 
   const nowPct = lastIdx > 0 ? (nowIdx / lastIdx * 100) : 100;
   obsBar.style.width = nowPct + '%';
   nowMark.style.left = nowPct + '%';
+
+  const tickAt = (i, posStyle) =>
+    `<span style="${posStyle}${i === nowIdx ? ';color:#5ea1f2' : ''}">${fmtLocal(frames[i].time)}</span>`;
+  ticksEl.innerHTML =
+    tickAt(0, 'left:0') +
+    tickAt(nowIdx, `left:${nowPct}%;transform:translateX(-50%)`) +
+    tickAt(lastIdx, 'right:0');
 
   // First load should land on "now" (latest observed), not the oldest
   // frame; later refreshes preserve wherever the user was scrubbed to,
