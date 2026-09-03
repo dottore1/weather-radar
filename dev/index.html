@@ -10,12 +10,14 @@
   .sub{font-size:13px;color:#9aa7b1;margin-bottom:12px}
   .stage{position:relative;width:100%;aspect-ratio:1000/700;background:#151a1f;border:1px solid #2a323a;border-radius:8px;overflow:hidden}
   .stage svg,.stage img{position:absolute;inset:0;width:100%;height:100%;display:block}
-  .stage img{opacity:0;transition:opacity .1s linear}
+  .stage #coast{z-index:0}
+  .stage img{opacity:0;transition:opacity .1s linear;z-index:1}
   .stage img.active{opacity:.9}
-  .stamp{position:absolute;left:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px}
-  .clock{position:absolute;right:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;font-variant-numeric:tabular-nums}
-  .city{fill:#eef2f5;font-size:12px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif}
-  .city-dot{fill:#eef2f5}
+  .stage #cities{z-index:2;pointer-events:none}
+  .stamp{position:absolute;left:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;z-index:3}
+  .clock{position:absolute;right:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;font-variant-numeric:tabular-nums;z-index:3}
+  .city{fill:#eef2f5;font-size:12px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;paint-order:stroke;stroke:#0d1013;stroke-width:3px}
+  .city-dot{fill:#eef2f5;stroke:#0d1013;stroke-width:1px}
   .controls{display:flex;align-items:center;gap:12px;margin-top:12px}
   button{background:#2b6fce;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
   .timeline{flex:1;position:relative;height:18px}
@@ -39,6 +41,7 @@
 
   <div class="stage" id="stage">
     <svg id="coast" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
+    <svg id="cities" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="stamp" id="stamp">Indlæser…</div>
     <div class="clock" id="clock">–</div>
   </div>
@@ -80,18 +83,24 @@ const cities = [
   ['Esbjerg', 8.45, 55.47],
   ['Rønne', 14.7, 55.1],
   ['Skagen', 10.6, 57.72],
+  ['Slagelse', 11.35, 55.4],
 ];
 
-const svg = document.getElementById('coast');
 const ns = 'http://www.w3.org/2000/svg';
+const coastSvg = document.getElementById('coast');
 coastPolys.forEach(poly => {
   const p = document.createElementNS(ns, 'polygon');
   p.setAttribute('points', poly.map(([lo, la]) => px(lo, la).join(',')).join(' '));
   p.setAttribute('fill', '#20262c');
   p.setAttribute('stroke', '#3a4652');
   p.setAttribute('stroke-width', '1');
-  svg.appendChild(p);
+  coastSvg.appendChild(p);
 });
+
+// Drawn into its own layer (#cities, stacked above the radar frames via
+// z-index — see CSS) so labels stay legible instead of getting painted
+// over once frame images load.
+const citiesSvg = document.getElementById('cities');
 cities.forEach(([name, lo, la]) => {
   const [x, y] = px(lo, la);
   const dot = document.createElementNS(ns, 'circle');
@@ -99,13 +108,13 @@ cities.forEach(([name, lo, la]) => {
   dot.setAttribute('cy', y);
   dot.setAttribute('r', 3);
   dot.setAttribute('class', 'city-dot');
-  svg.appendChild(dot);
+  citiesSvg.appendChild(dot);
   const label = document.createElementNS(ns, 'text');
   label.setAttribute('x', x + 6);
   label.setAttribute('y', y + 4);
   label.setAttribute('class', 'city');
   label.textContent = name;
-  svg.appendChild(label);
+  citiesSvg.appendChild(label);
 });
 
 const stage = document.getElementById('stage');
