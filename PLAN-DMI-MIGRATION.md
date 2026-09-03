@@ -248,6 +248,26 @@ motion field:
   Verified against real data: the large mass now shows directional
   streaking/stretching consistent with the rest of the field's motion,
   not uniform growth in place.
+- **Bug found and fixed: the last forecast frame jumped noticeably more
+  than the smooth progression of the rest.** Cause: forecast PNGs were
+  cached to disk keyed only by absolute future timestamp
+  (`forecast-YYYYMMDDHHmm.png`), with `if not cache_path.exists(): write`
+  — appropriate for observed frames (genuinely immutable once published)
+  but wrong for forecast frames. A given absolute future timestamp gets
+  computed as a *different* step number (different accumulated
+  displacement, from a different/fresher motion field) across successive
+  refreshes as `curr` advances — e.g. today's +90min step is tomorrow's
+  +80min step once `curr` catches up 10 min. Skip-if-exists meant whichever
+  refresh computed a given timestamp *first* won permanently; it silently
+  reused that older, larger-displacement render forever after, sitting as
+  a discontinuity at the end of an otherwise-fresh sequence. Fixed by
+  always overwriting in `_compute_forecast_sync` — safe because that
+  function only runs when the higher-level `(baseline_id, curr_id)`-keyed
+  cache in `get_forecast_entries` has already decided a recompute is
+  warranted, so every step is authoritative at that point. Verified the
+  fix directly (not just by inspection): called the compute function twice
+  in a row and confirmed the same output file's mtime actually advances on
+  the second call, where before the fix it wouldn't have.
 - **Bug found and fixed** (frames weren't moving at all): a naive whole-field
   FFT phase correlation on two real consecutive composites returned exactly
   `(0, 0)` even though the frames genuinely differed. Root cause: radar

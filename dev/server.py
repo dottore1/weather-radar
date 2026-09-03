@@ -138,8 +138,18 @@ def _compute_forecast_sync(items: list[dict]) -> list[dict]:
         t = base_time + timedelta(minutes=10 * i)
         fid = "forecast-" + t.strftime("%Y%m%d%H%M")
         cache_path = CACHE_DIR / f"{fid}.png"
-        if not cache_path.exists():
-            cache_path.write_bytes(png_from_grid(dbz, valid))
+        # Always overwrite, never skip-if-exists: unlike observed frames,
+        # a given absolute future timestamp gets computed as a *different*
+        # step number (different accumulated displacement, from a
+        # different/fresher motion field) across successive refreshes as
+        # curr advances -- e.g. today's +90min step becomes tomorrow's
+        # +80min step once curr catches up by 10 min. This function only
+        # runs when get_forecast_entries has already decided a recompute is
+        # warranted, so every step here is authoritative and must replace
+        # whatever an older batch previously guessed for the same fid.
+        # (Skip-if-exists here previously left one stale, larger-looking
+        # step sitting at the end of an otherwise-fresh sequence.)
+        cache_path.write_bytes(png_from_grid(dbz, valid))
         entries.append({
             "id": fid,
             "time": t.strftime("%Y-%m-%dT%H:%M:00Z"),
