@@ -133,3 +133,18 @@ def test_frames_poll_prunes_stale_cached_pngs(dev_server):
     current_ids = {entry["id"] for entry in payload}
     remaining = {p.stem for p in module.CACHE_DIR.glob("*.png")}
     assert remaining <= current_ids
+
+
+def test_trim_memory_survives_a_libc_without_malloc_trim(dev_server, monkeypatch):
+    """Regression test for a real production failure: on a libc without
+    glibc's malloc_trim extension (e.g. musl-based containers), ctypes
+    raises AttributeError on the symbol lookup — not OSError, which is all
+    _trim_memory used to catch ("Symbol not found: malloc_trim")."""
+    _, module = dev_server
+
+    class _LibcMissingMallocTrim:
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    monkeypatch.setattr(module.ctypes, "CDLL", lambda name: _LibcMissingMallocTrim())
+    module._trim_memory()  # must not raise

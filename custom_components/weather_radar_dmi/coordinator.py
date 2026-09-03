@@ -58,7 +58,9 @@ def _trim_memory() -> None:
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except OSError:
-        pass
+        pass  # libc.so.6 itself not found (e.g. not Linux)
+    except AttributeError:
+        pass  # loaded a libc without the malloc_trim symbol (e.g. musl)
 
 
 def _fetch_latest_items() -> list[dict]:

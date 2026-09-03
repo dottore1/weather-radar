@@ -71,3 +71,34 @@ async def test_png_cache_is_pruned_of_stale_frame_ids(hass, monkeypatch, tmp_pat
     current_ids = {entry["id"] for entry in coord.data}
     remaining = {p.stem for p in coord.cache_dir.glob("*.png")}
     assert remaining <= current_ids
+
+
+class _LibcMissingMallocTrim:
+    """Stands in for a loaded libc (e.g. musl, as used by some container
+    base images) that has no malloc_trim symbol. ctypes raises
+    AttributeError for that — not OSError — which is exactly what
+    _trim_memory failed to catch in production (see
+    "DMI radar poll failed: Symbol not found: malloc_trim")."""
+
+    def __getattr__(self, name):
+        raise AttributeError(name)
+
+
+def test_trim_memory_survives_a_libc_without_malloc_trim(monkeypatch):
+    monkeypatch.setattr(coordinator_module.ctypes, "CDLL", lambda name: _LibcMissingMallocTrim())
+    coordinator_module._trim_memory()  # must not raise
+
+
+async def test_poll_still_succeeds_when_malloc_trim_is_unavailable(hass, monkeypatch, tmp_path):
+    """End-to-end regression test for the actual reported failure: the
+    whole poll was reported as failed even though every bit of real work
+    (fetch/render/forecast) had already succeeded, purely because
+    _trim_memory's AttributeError propagated up through _poll_sync."""
+    _patch_dmi(monkeypatch, tmp_path)
+    monkeypatch.setattr(coordinator_module.ctypes, "CDLL", lambda name: _LibcMissingMallocTrim())
+    coord = WeatherRadarDmiCoordinator(hass)
+
+    await coord.async_refresh()
+
+    assert coord.last_update_success
+    assert coord.data
