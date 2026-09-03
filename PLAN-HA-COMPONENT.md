@@ -224,3 +224,37 @@ precision made a previously-strict inequality land exactly on the
 boundary — a real precision-sensitivity artifact in the test's assertion,
 not a behavior regression (the paired right-cell assertion already used
 `<=`).
+
+## v0.1.1: malloc_trim crash on HAOS (musl libc)
+
+First real install (HAOS, x86_64) failed immediately: `DMI radar poll
+failed: Symbol not found: malloc_trim`. `ctypes.CDLL("libc.so.6").
+malloc_trim` raises `AttributeError` (not `OSError`) when the loaded libc
+has no such symbol — true for musl-based libc, which HAOS's container
+uses. `_trim_memory` only caught `OSError`, so the exception propagated
+through `_poll_sync` into `_async_update_data`, turning an otherwise
+fully-successful poll into a reported failure. Fixed by also catching
+`AttributeError`; regression test reproduces the exact failure. Bumped to
+v0.1.1.
+
+Follow-up question: does musl need a different memory-release call in
+place of `malloc_trim`, or does skipping it there just mean losing the
+memory benefit? Tested directly rather than assuming — built an Alpine
+(musl) container and repeated the same large float32/complex64 array
+allocate/free pattern the FFT motion field uses, 6 cycles, checking RSS
+after each with only `gc.collect()` (no trim call at all):
+
+```
+iter 0: peak=81.6 MB, after gc.collect() only=34.4 MB
+iter 1-5: identical (81.6 -> 34.4 MB every cycle, no creep)
+```
+
+**musl doesn't need a `malloc_trim` equivalent.** musl's allocator
+(`mallocng`) routes larger allocations through `mmap`, which the kernel
+reclaims immediately via `munmap` on free — memory just doesn't get stuck
+the way it does with glibc's arena-based heap (the actual problem
+`malloc_trim` exists to work around on glibc). So on HAOS specifically,
+`gc.collect()` alone already gets the full memory-release benefit;
+`_trim_memory`'s `malloc_trim` attempt correctly no-ops there. v0.1.1's
+fix is the complete, correct behavior on this platform, not a partial
+workaround — no follow-up change needed.
