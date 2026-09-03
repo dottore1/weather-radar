@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 from render import render_png_bytes, dbz_grid_for, png_from_grid  # noqa: E402
-from nowcast import forecast_steps  # noqa: E402
+from nowcast import estimate_motion, forecast_steps_from_motion  # noqa: E402
 
 PORT = 8765
 ITEMS_URL = (
@@ -66,16 +66,25 @@ def get_grid(item: dict):
     return dbz_grid_for(io.BytesIO(h5_bytes))
 
 
+MOTION_BASELINE_STEPS = 2  # estimate motion over a 20-min gap (items[-3] -> items[-1]),
+                           # not the immediately-preceding 10-min pair — a short baseline
+                           # is noise-dominated and prone to spuriously reading as ~0
+
+
 def build_forecast(items: list[dict]) -> list[dict]:
-    """Advection nowcast off the last two observed frames — see
-    dev/nowcast.py. Returns frame-list entries in the same shape as the
-    observed ones, plus caches each forecast PNG to disk."""
-    if len(items) < 2:
+    """Advection nowcast — see dev/nowcast.py. Returns frame-list entries in
+    the same shape as the observed ones, plus caches each forecast PNG to
+    disk."""
+    if len(items) <= MOTION_BASELINE_STEPS:
         return []
-    prev_item, curr_item = items[-2], items[-1]
-    dbz_prev, valid_prev = get_grid(prev_item)
+    baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
+    dbz_base, valid_base = get_grid(baseline_item)
     dbz_curr, valid_curr = get_grid(curr_item)
-    steps = forecast_steps(dbz_prev, valid_prev, dbz_curr, valid_curr, FCST_FRAMES)
+    dy_baseline, dx_baseline = estimate_motion(dbz_base, valid_base, dbz_curr, valid_curr)
+    # per-10-min-step motion: the baseline spans MOTION_BASELINE_STEPS steps
+    dy = round(dy_baseline / MOTION_BASELINE_STEPS)
+    dx = round(dx_baseline / MOTION_BASELINE_STEPS)
+    steps = forecast_steps_from_motion(dbz_curr, valid_curr, dy, dx, FCST_FRAMES)
 
     base_time = datetime.fromisoformat(curr_item["properties"]["datetime"].replace("Z", "+00:00"))
     entries = []

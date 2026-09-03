@@ -164,6 +164,21 @@ bevæge sig hen de kommende 90 minutter"*):
   (no per-cell/optical-flow motion field, no growth/decay modeling) — fine
   for a first pass, degrades toward the end of the 90-min window, and
   won't match DMI/TV2's own (unknown, private) nowcast algorithm exactly.
+- **Bug found and fixed** (frames weren't moving at all): a naive whole-field
+  FFT phase correlation on two real consecutive composites returned exactly
+  `(0, 0)` even though the frames genuinely differed. Root cause: radar
+  composites have a fixed coverage-boundary edge (data → no-data) that's
+  geographically static between frames — a hard edge is a very strong,
+  perfectly-stationary broadband signal that dominates phase correlation and
+  pulls the estimate toward zero shift regardless of real (smaller-amplitude)
+  rain motion. Fixed by (1) tapering the field with a 2D Hann window before
+  the FFT (standard fix for edge artifacts in phase correlation) and (2)
+  cropping to the active echo region first. Also switched the motion
+  baseline from the immediately-preceding 10-min frame pair to a 20-min gap
+  (`items[-3]` → `items[-1]`, halved) — a short baseline is noise-dominated
+  and prone to reading as ~0 even with the edge-artifact fix in place.
+  Verified against real data: forecast frames now visibly/numerically differ
+  from each other (confirmed via pixel diff and side-by-side inspection).
 
 ## Suggested order of work
 
