@@ -145,6 +145,13 @@ TILE_MIN_VALID_PX = 400  # ~12% of a 180x180 tile; below this a tile's own
 # over the 20-min baseline, in our ~0.57 km/px working-grid resolution)
 # before smoothing, on top of the neighborhood median filter below.
 TILE_MAX_DISPLACEMENT_PX = 70
+# How much of a measured tile's own vector to trust vs. the global (whole-
+# frame) vector: 1.0 = fully independent per-tile motion (can look like the
+# sky "expanding" rather than moving — see estimate_motion_field's
+# docstring), 0.0 = collapses back to one rigid global shift. 0.6 keeps
+# real per-region variation visible while anchoring everything to a shared
+# overall drift.
+TILE_BLEND_ALPHA = 0.6
 
 
 def _tile_starts(total: int, tile_size: int, step: int) -> list[int]:
@@ -194,13 +201,20 @@ def _upsample_field(grid: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
 def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                            dbz_curr: np.ndarray, valid_curr: np.ndarray,
                            tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
-                           min_valid_px: int = TILE_MIN_VALID_PX) -> tuple[np.ndarray, np.ndarray]:
+                           min_valid_px: int = TILE_MIN_VALID_PX,
+                           blend_alpha: float = TILE_BLEND_ALPHA) -> tuple[np.ndarray, np.ndarray]:
     """Returns (dy_field, dx_field): dense per-pixel arrays, same shape as
     the input, giving a local motion vector at every pixel."""
     h, w = dbz_prev.shape
     step = tile_size - overlap
     y_starts = _tile_starts(h, tile_size, step)
     x_starts = _tile_starts(w, tile_size, step)
+
+    # The global (cropped+windowed, whole-frame) estimate anchors the field:
+    # every tile — measured or not — gets pulled toward this shared drift
+    # (see blend step below), so the *whole* system visibly translates
+    # together instead of the sky looking like it's expanding in place.
+    fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
 
     dy_grid = np.full((len(y_starts), len(x_starts)), np.nan)
     dx_grid = np.full((len(y_starts), len(x_starts)), np.nan)
@@ -220,15 +234,27 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
     # still be a spurious/wrong-direction outlier relative to its neighbors)
     # while the grid still distinguishes "real measurement" from "no data"
     # (NaN) — see _median_filter_grid's docstring for why this must happen
-    # *before* fallback-filling below, not after.
+    # before the blend/fallback steps below, not after.
     dy_grid = _median_filter_grid(dy_grid)
     dx_grid = _median_filter_grid(dx_grid)
 
+    # Blend measured tiles *toward* the global vector rather than trusting
+    # them outright. Without this, a tile with a strong independent
+    # measurement sitting next to a tile that has none (and would otherwise
+    # jump straight to a possibly very different fallback value) creates a
+    # spatially inconsistent field — and warping by an inconsistent field
+    # doesn't translate a rain area as one piece, it stretches it (looks
+    # like the sky "expanding" instead of moving). Blending keeps every
+    # tile anchored to the same baseline drift, with only a bounded local
+    # deviation layered on top — real per-region character, but the whole
+    # field still moves together. blend_alpha=1 is the old "trust the tile
+    # outright" behavior; 0 collapses back to the single global vector.
+    dy_grid = np.where(np.isnan(dy_grid), np.nan, blend_alpha * dy_grid + (1 - blend_alpha) * fallback_dy)
+    dx_grid = np.where(np.isnan(dx_grid), np.nan, blend_alpha * dx_grid + (1 - blend_alpha) * fallback_dx)
+
     # Whatever's still NaN (no real measurement anywhere in that tile's
-    # neighborhood) falls back to the single global (cropped+windowed)
-    # estimate — better than implicitly meaning "zero motion there", which
-    # would be wrong (rain can still move *into* a currently-dry tile).
-    fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    # neighborhood) gets the plain global vector — same as a fully-blended
+    # measured tile would if it agreed exactly with the global estimate.
     dy_grid = np.where(np.isnan(dy_grid), fallback_dy, dy_grid)
     dx_grid = np.where(np.isnan(dx_grid), fallback_dx, dx_grid)
 
@@ -336,14 +362,32 @@ if __name__ == "__main__":
     valid_curr[250 + right_dy:350 + right_dy, 420 + right_dx:520 + right_dx] = True
 
     global_dy, global_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    # blend_alpha=1: pure per-tile measurement, no shrinkage toward the
+    # global vector — this is what "should the two regions actually
+    # disagree at all" tests, independent of the blend feature itself.
+    dy_field_pure, dx_field_pure = estimate_motion_field(
+        dbz_prev, valid_prev, dbz_curr, valid_curr, blend_alpha=1.0)
+    field_dx_left_pure = dx_field_pure[300, 130]
+    field_dx_right_pure = dx_field_pure[300, 470]
+    print(f"opposing cells (blend_alpha=1): global=({global_dy},{global_dx}) "
+          f"field@left_dx={field_dx_left_pure:.1f} (true {left_dx}) "
+          f"field@right_dx={field_dx_right_pure:.1f} (true {right_dx})")
+    assert abs(field_dx_left_pure - left_dx) <= 2, "field should recover the left cell's own motion"
+    assert abs(field_dx_right_pure - right_dx) <= 2, "field should recover the right cell's own motion"
+    assert field_dx_left_pure > 0 and field_dx_right_pure < 0, "the two regions should disagree in sign, unlike a global vector"
+
+    # Default blend_alpha (<1): local measurements get pulled toward the
+    # global vector rather than trusted outright (see TILE_BLEND_ALPHA) —
+    # exact magnitude recovery is intentionally traded away for a field
+    # that stays anchored to one consistent overall drift, so what matters
+    # here is that the two regions *still* end up on opposite sides of the
+    # global estimate, not that they hit their true value exactly.
     dy_field, dx_field = estimate_motion_field(dbz_prev, valid_prev, dbz_curr, valid_curr)
-    field_dx_left = dx_field[300, 130]   # sampled inside the left cell's region
-    field_dx_right = dx_field[300, 470]  # sampled inside the right cell's region
-    print(f"opposing cells: global=({global_dy},{global_dx}) "
-          f"field@left_dx={field_dx_left:.1f} (true {left_dx}) "
-          f"field@right_dx={field_dx_right:.1f} (true {right_dx})")
-    assert abs(field_dx_left - left_dx) <= 2, "field should recover the left cell's own motion"
-    assert abs(field_dx_right - right_dx) <= 2, "field should recover the right cell's own motion"
-    assert field_dx_left > 0 and field_dx_right < 0, "the two regions should disagree in sign, unlike a global vector"
+    field_dx_left = dx_field[300, 130]
+    field_dx_right = dx_field[300, 470]
+    print(f"opposing cells (blend_alpha={TILE_BLEND_ALPHA}): "
+          f"field@left_dx={field_dx_left:.1f} field@right_dx={field_dx_right:.1f}")
+    assert field_dx_left > global_dx, "blended left-cell vector should still lean toward its own (rightward) motion"
+    assert field_dx_right <= global_dx, "blended right-cell vector should stay at/below the global drift"
 
     print("OK")
