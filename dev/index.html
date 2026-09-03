@@ -15,7 +15,6 @@
   .stage img.active{opacity:.9}
   .stage #cities{z-index:2;pointer-events:none}
   .stamp{position:absolute;left:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;z-index:3}
-  .clock{position:absolute;right:10px;top:10px;background:rgba(20,24,28,.85);border:1px solid #2a323a;border-radius:6px;padding:6px 10px;font-size:13px;font-variant-numeric:tabular-nums;z-index:3}
   .city{fill:#eef2f5;font-size:12px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;paint-order:stroke;stroke:#0d1013;stroke-width:3px}
   .city-dot{fill:#eef2f5;stroke:#0d1013;stroke-width:1px}
   .controls{display:flex;align-items:center;gap:12px;margin-top:12px}
@@ -43,7 +42,6 @@
     <svg id="coast" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
     <svg id="cities" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="stamp" id="stamp">Indlæser…</div>
-    <div class="clock" id="clock">–</div>
   </div>
 
   <div class="controls">
@@ -151,7 +149,6 @@ cities.forEach(([name, lo, la]) => {
 
 const stage = document.getElementById('stage');
 const stamp = document.getElementById('stamp');
-const clockEl = document.getElementById('clock');
 const slider = document.getElementById('slider');
 const playBtn = document.getElementById('play');
 const ticksEl = document.getElementById('ticks');
@@ -169,12 +166,6 @@ let hasLoadedOnce = false;
 function fmtLocal(iso) {
   return new Date(iso).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Copenhagen' });
 }
-
-function tickClock() {
-  clockEl.textContent = 'Nu kl. ' + fmtLocal(new Date().toISOString());
-}
-tickClock();
-setInterval(tickClock, 1000);
 
 async function loadFrames() {
   statusEl.textContent = 'Henter billedeliste…';
@@ -245,10 +236,10 @@ function show(i) {
   let text = `${label} · kl. ` + fmtLocal(f.time);
   if (isLatest) {
     const lagMin = Math.round((Date.now() - new Date(f.time).getTime()) / 60000);
-    text += ` (${lagMin} min. forsinket — normalt for radardata)`;
+    text += ` (${lagMin} min.)`;
   } else if (isForecast) {
     const aheadMin = Math.round((new Date(f.time).getTime() - new Date(frames[nowIdx].time).getTime()) / 60000);
-    text += ` (+${aheadMin} min. — fremskrevet, ikke observeret)`;
+    text += ` (+${aheadMin} min.)`;
   }
   stamp.textContent = text;
   slider.value = i;
