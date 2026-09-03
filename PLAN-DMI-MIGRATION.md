@@ -263,6 +263,41 @@ motion field:
   Verified against real data: the large mass now shows directional
   streaking/stretching consistent with the rest of the field's motion,
   not uniform growth in place.
+- **Follow-up: "expanding" came back on a later real-data check.** Not a
+  regression — the confidence-weighting code was untouched and still
+  correct — but a different, previously-unaddressed mechanism. Diagnosed
+  directly: the global (whole-frame) vector was exactly `(0, 0)` for that
+  moment's real data (a legitimate outcome — no strong overall
+  precipitation drift right then, not a bug), yet individual tiles were
+  still earning full trust (confidence scores 30-59, comfortably above
+  `TILE_CONF_LOW`) with quite different raw vectors — e.g. `(-20,22)`,
+  `(-13,0)`, `(-8,28)`, `(7,42)`. `TILE_MAX_DISPLACEMENT_PX` only rejects a
+  tile whose *absolute* motion is implausible; it does nothing when several
+  tiles are each individually plausible but disagree with each other and
+  with the (near-zero) shared drift. Confidently-measured-but-mutually-
+  divergent tiles with nothing to anchor them together is exactly what
+  reads as "expanding" rather than translating.
+  - Fixed by adding `TILE_MAX_DEVIATION_PX = 15`: caps how far *any* tile's
+    raw vector is allowed to differ from the global vector, applied before
+    the trust-weighted blend and regardless of that tile's own trust score.
+    Real per-region variation stays visible but bounded, instead of a
+    handful of confident tiles running off in unrelated directions with no
+    larger context to validate them.
+  - This directly conflicts with the earlier opposing-cells self-test's
+    exact-recovery assertions (deviation of 24px there, above the new
+    15px cap) — that's an intentional trade-off, not a test regression: the
+    test now passes `max_deviation_px=999` for the `blend_alpha=1.0` case
+    specifically to keep verifying the underlying per-tile *mechanism*
+    still works, while the default-parameter case verifies the new,
+    intentionally more conservative real behavior instead.
+  - Verified against the exact real data that exposed the issue: re-ran
+    the same diagnostic after the fix (dx field range narrowed from
+    `[-3.5, 15.5]` to `[-3.5, 9.0]`) and visually confirmed the forecast
+    sequence now shows subtle, bounded local evolution instead of
+    sprawling outward. Given the global vector genuinely was zero, a
+    forecast that looks mostly stable is the *honest* answer here —
+    inventing dramatic movement the data doesn't support would be less
+    accurate, not more, even though it looks less dynamic.
 - **Bug found and fixed: the last forecast frame jumped noticeably more
   than the smooth progression of the rest.** Cause: forecast PNGs were
   cached to disk keyed only by absolute future timestamp

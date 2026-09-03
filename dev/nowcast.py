@@ -178,6 +178,21 @@ TILE_BLEND_ALPHA = 0.6
 TILE_CONF_LOW, TILE_CONF_HIGH = 7.0, 25.0   # peak/mean range: noise-floor -> clearly-confident
 TILE_DATA_SATURATE_PX = 3000  # combined (prev+curr) valid pixels at which the data-volume factor maxes out
 
+# TILE_MAX_DISPLACEMENT_PX above only rejects a tile whose *absolute* motion
+# is implausible. It does nothing when several tiles are each individually
+# plausible (pass the confidence+data trust check) but point in noticeably
+# different directions from each other and from the global vector -- which
+# happens whenever the global (whole-frame) vector is small or ~zero (a
+# real, legitimate situation: scattered/weakly-organized precipitation with
+# no strong overall drift, not a bug). Confidently-measured-but-divergent
+# tiles with nothing to anchor them together is exactly what reads as the
+# sky "expanding" rather than translating, even though each tile's own
+# vector may be individually correct. Cap how far *any* tile is allowed to
+# deviate from the shared global drift, regardless of its own trust score --
+# real per-region variation stays visible, but bounded, instead of letting
+# a handful of confident tiles run off in unrelated directions.
+TILE_MAX_DEVIATION_PX = 15
+
 
 def _tile_starts(total: int, tile_size: int, step: int) -> list[int]:
     if total <= tile_size:
@@ -227,7 +242,8 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                            dbz_curr: np.ndarray, valid_curr: np.ndarray,
                            tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
                            min_valid_px: int = TILE_MIN_VALID_PX,
-                           blend_alpha: float = TILE_BLEND_ALPHA) -> tuple[np.ndarray, np.ndarray]:
+                           blend_alpha: float = TILE_BLEND_ALPHA,
+                           max_deviation_px: float = TILE_MAX_DEVIATION_PX) -> tuple[np.ndarray, np.ndarray]:
     """Returns (dy_field, dx_field): dense per-pixel arrays, same shape as
     the input, giving a local motion vector at every pixel."""
     h, w = dbz_prev.shape
@@ -256,6 +272,16 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                                              return_confidence=True)
             if (tdy * tdy + tdx * tdx) ** 0.5 > TILE_MAX_DISPLACEMENT_PX:
                 continue  # implausible spike — treat like "no reliable signal"
+            # Bound how far even a plausible, confidently-measured tile can
+            # differ from the shared global drift (see TILE_MAX_DEVIATION_PX)
+            # — this is a *different* check than the absolute-magnitude one
+            # above: it catches a tile that's individually reasonable but
+            # disagrees with everything else, which the magnitude check
+            # alone can't (a tile pointing a plausible-looking 30px in a
+            # direction nothing else agrees with isn't "implausible", just
+            # inconsistent with its neighbors and the overall picture).
+            tdy = fallback_dy + np.clip(tdy - fallback_dy, -max_deviation_px, max_deviation_px)
+            tdx = fallback_dx + np.clip(tdx - fallback_dx, -max_deviation_px, max_deviation_px)
             dy_grid[iy, ix], dx_grid[iy, ix] = tdy, tdx
             # Two independent trust factors, multiplied: how sharply this
             # tile's correlation peak stood out (low inside a broad, self-
@@ -405,11 +431,13 @@ if __name__ == "__main__":
     valid_curr[250 + right_dy:350 + right_dy, 420 + right_dx:520 + right_dx] = True
 
     global_dy, global_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
-    # blend_alpha=1: pure per-tile measurement, no shrinkage toward the
-    # global vector — this is what "should the two regions actually
-    # disagree at all" tests, independent of the blend feature itself.
+    # blend_alpha=1 + a relaxed deviation cap: pure per-tile measurement, no
+    # shrinkage toward the global vector and no bound on how far a tile can
+    # differ from it — this is what "should the two regions actually
+    # disagree at all" tests, independent of the blend/deviation-cap
+    # features that (by design) constrain this in the default call below.
     dy_field_pure, dx_field_pure = estimate_motion_field(
-        dbz_prev, valid_prev, dbz_curr, valid_curr, blend_alpha=1.0)
+        dbz_prev, valid_prev, dbz_curr, valid_curr, blend_alpha=1.0, max_deviation_px=999)
     field_dx_left_pure = dx_field_pure[300, 130]
     field_dx_right_pure = dx_field_pure[300, 470]
     print(f"opposing cells (blend_alpha=1): global=({global_dy},{global_dx}) "
