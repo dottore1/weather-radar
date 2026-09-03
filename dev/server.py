@@ -17,7 +17,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-from render import render_png_bytes  # noqa: E402
+from render import render_png_bytes, dbz_grid_for, png_from_grid  # noqa: E402
+from nowcast import forecast_steps  # noqa: E402
 
 PORT = 8765
 ITEMS_URL = (
@@ -25,6 +26,7 @@ ITEMS_URL = (
     "?limit=40&sortorder=datetime,DESC"
 )
 HIST_FRAMES = 13  # ~2h at 10-min steps, matching the previous TV2-based design
+FCST_FRAMES = 9   # 90 min ahead at 10-min steps (advection nowcast — see dev/nowcast.py)
 CACHE_DIR = Path(__file__).parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -41,18 +43,54 @@ def fetch_latest_items() -> list[dict]:
     return items[-HIST_FRAMES:]
 
 
+def _download(href: str) -> bytes:
+    with urllib.request.urlopen(href, timeout=20) as resp:
+        return resp.read()
+
+
 def get_or_render(item: dict) -> bytes:
     frame_id = item["id"]
     cache_path = CACHE_DIR / f"{frame_id}.png"
     if cache_path.exists():
         return cache_path.read_bytes()
-    href = item["asset"]["data"]["href"]
-    with urllib.request.urlopen(href, timeout=20) as resp:
-        h5_bytes = resp.read()
     import io
+    h5_bytes = _download(item["asset"]["data"]["href"])
     png_bytes = render_png_bytes(io.BytesIO(h5_bytes))
     cache_path.write_bytes(png_bytes)
     return png_bytes
+
+
+def get_grid(item: dict):
+    import io
+    h5_bytes = _download(item["asset"]["data"]["href"])
+    return dbz_grid_for(io.BytesIO(h5_bytes))
+
+
+def build_forecast(items: list[dict]) -> list[dict]:
+    """Advection nowcast off the last two observed frames — see
+    dev/nowcast.py. Returns frame-list entries in the same shape as the
+    observed ones, plus caches each forecast PNG to disk."""
+    if len(items) < 2:
+        return []
+    prev_item, curr_item = items[-2], items[-1]
+    dbz_prev, valid_prev = get_grid(prev_item)
+    dbz_curr, valid_curr = get_grid(curr_item)
+    steps = forecast_steps(dbz_prev, valid_prev, dbz_curr, valid_curr, FCST_FRAMES)
+
+    base_time = datetime.fromisoformat(curr_item["properties"]["datetime"].replace("Z", "+00:00"))
+    entries = []
+    for i, (dbz, valid) in enumerate(steps, start=1):
+        t = base_time + timedelta(minutes=10 * i)
+        fid = "forecast-" + t.strftime("%Y%m%d%H%M")
+        cache_path = CACHE_DIR / f"{fid}.png"
+        if not cache_path.exists():
+            cache_path.write_bytes(png_from_grid(dbz, valid))
+        entries.append({
+            "id": fid,
+            "time": t.strftime("%Y-%m-%dT%H:%M:00Z"),
+            "forecast": True,
+        })
+    return entries
 
 
 INDEX_HTML_PATH = Path(__file__).parent / "index.html"
@@ -77,12 +115,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/frames":
                 items = fetch_latest_items()
                 payload = [
-                    {"id": it["id"], "time": it["properties"]["datetime"]}
+                    {"id": it["id"], "time": it["properties"]["datetime"], "forecast": False}
                     for it in items
                 ]
+                payload.extend(build_forecast(items))
                 self._send(200, "application/json", json.dumps(payload).encode())
             elif path.startswith("/api/frame/"):
                 frame_id = path[len("/api/frame/"):].removesuffix(".png")
+                if frame_id.startswith("forecast-"):
+                    cache_path = CACHE_DIR / f"{frame_id}.png"
+                    if not cache_path.exists():
+                        self._send(404, "text/plain", b"forecast frame expired (recompute via /api/frames)")
+                        return
+                    self._send(200, "image/png", cache_path.read_bytes())
+                    return
                 items = fetch_latest_items()
                 match = next((it for it in items if it["id"] == frame_id), None)
                 if not match:
