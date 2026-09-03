@@ -85,14 +85,29 @@ DMI API (HDF5, server-to-server — no CORS issue)
     browser, no Home Assistant required. This is the same harness we'd use
     to visually verify colorization and alignment before it ever touches HA.
 
-- [ ] **2. Basemap replacement**
-  - Generate a static Denmark basemap once, offline, from public-domain
-    data (Natural Earth — explicitly public domain, no attribution even
-    required) at the same bbox DMI's composite reports
-    (`[4.379, 52.294, 20.735, 59.828]`), so radar-grid alignment is exact
-    instead of the eyeballed-pixel-match we had to do for TV2's PNGs.
-  - Commit the generated static image/SVG to the repo — zero ongoing
-    third-party dependency for the map layer at all, unlike before.
+- [x] **2. Basemap replacement**
+  - Done via `dev/index.html`'s `coastPolys` — real coastline (Denmark plus
+    Sweden/Germany slivers for context) from Natural Earth's public-domain
+    10m admin-0-countries dataset, clipped to our display bbox and
+    simplified with shapely (`dev/_gen_coastline.py`, a one-off generation
+    script kept in the repo for reproducibility — not a runtime dependency;
+    the resulting coordinates are baked directly into `index.html`).
+  - Hit a real data-quality trap worth remembering: the first source tried
+    (`ne_10m_land.geojson` on the same GitHub mirror) turned out to be an
+    oddly pre-merged ~11-feature version that fused Scandinavia into
+    mainland Europe with no sea gap at all — LOOKED like a bug (a giant
+    blob swallowing the whole Kattegat/Baltic) but was actually bad input
+    data. Confirmed the *real* per-country dataset
+    (`ne_10m_admin_0_countries.geojson`) has correct topology by checking
+    `Denmark.distance(Sweden)` directly with shapely (~5.7km, no overlap)
+    rather than trusting a low-contrast preview render alone — the dark
+    fill/outline/background palette made a real, correctly-separated gap
+    visually indistinguishable from a bug in a quick monochrome check.
+  - Still using the render.py/nowcast.py-generated composite bbox
+    (`[7.0, 16.0, 54.3, 58.2]`), not DMI's full composite bbox — fine,
+    since coastline and radar frames already share that same box by
+    construction (`OUT_LON_MIN`/etc.), so alignment is exact by
+    definition, not eyeballed.
 
 - [ ] **3. Colorization/legend design**
   - Pick our own dBZ -> color ramp (can't reuse TV2's exact palette; not
