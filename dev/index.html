@@ -19,17 +19,17 @@
   .city-dot{fill:#eef2f5;stroke:#0d1013;stroke-width:1px}
   .controls{display:flex;align-items:center;gap:12px;margin-top:12px}
   button{background:#2b6fce;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:14px}
-  .timeline{flex:1;position:relative;height:18px;margin-bottom:18px}
+  .timeline{flex:1;position:relative;height:18px;margin-bottom:32px}
   .track{position:absolute;left:0;right:0;top:6px;height:6px;border-radius:3px;background:#3a4652}
   .track .obs{position:absolute;left:0;top:0;bottom:0;background:#7fa8d4;border-radius:3px 0 0 3px}
   .now-mark{position:absolute;top:0;width:2px;height:18px;background:#eef2f5}
+  .now-label{position:absolute;top:22px;transform:translateX(-50%);font-size:11px;color:#5ea1f2;white-space:nowrap}
   input[type=range]{position:absolute;left:0;top:0;width:100%;height:18px;margin:0;background:transparent;-webkit-appearance:none;appearance:none;cursor:pointer}
   input[type=range]::-webkit-slider-runnable-track{background:transparent}
   input[type=range]::-moz-range-track{background:transparent}
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid #2b6fce;margin-top:2px}
   input[type=range]::-moz-range-thumb{width:8px;height:8px;border-radius:50%;background:#fff;border:3px solid #2b6fce}
-  .ticks{position:absolute;left:0;right:0;top:22px;height:14px;font-size:11px;color:#9aa7b1}
-  .ticks span{position:absolute;top:0;white-space:nowrap}
+  .ticks{position:absolute;left:0;right:0;top:38px;font-size:11px;color:#9aa7b1;display:flex;justify-content:space-between}
   .status{margin-top:10px;font-size:12px;color:#9aa7b1;white-space:pre-wrap}
   a{color:#5ea1f2}
 </style>
@@ -50,6 +50,7 @@
     <div class="timeline">
       <div class="track"><div class="obs" id="obsBar"></div><div class="now-mark" id="nowMark"></div></div>
       <input type="range" id="slider" min="0" max="0" value="0" step="1">
+      <div class="now-label" id="nowLabel">Nu</div>
       <div class="ticks" id="ticks"></div>
     </div>
   </div>
@@ -156,6 +157,7 @@ const ticksEl = document.getElementById('ticks');
 const statusEl = document.getElementById('status');
 const obsBar = document.getElementById('obsBar');
 const nowMark = document.getElementById('nowMark');
+const nowLabel = document.getElementById('nowLabel');
 
 let frames = [];
 let nowIdx = 0;
@@ -200,13 +202,10 @@ async function loadFrames() {
   const nowPct = lastIdx > 0 ? (nowIdx / lastIdx * 100) : 100;
   obsBar.style.width = nowPct + '%';
   nowMark.style.left = nowPct + '%';
+  nowLabel.style.left = nowPct + '%';
 
-  const tickAt = (i, posStyle) =>
-    `<span style="${posStyle}${i === nowIdx ? ';color:#5ea1f2' : ''}">${fmtLocal(frames[i].time)}</span>`;
-  ticksEl.innerHTML =
-    tickAt(0, 'left:0') +
-    tickAt(nowIdx, `left:${nowPct}%;transform:translateX(-50%)`) +
-    tickAt(lastIdx, 'right:0');
+  ticksEl.innerHTML = [0, nowIdx, lastIdx]
+    .map(i => `<span${i === nowIdx ? ' style="color:#5ea1f2"' : ''}>${fmtLocal(frames[i].time)}</span>`).join('');
 
   // First load should land on "now" (latest observed), not the oldest
   // frame; later refreshes preserve wherever the user was scrubbed to,
