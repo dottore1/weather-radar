@@ -113,13 +113,30 @@ def _echo_bbox(valid_a: np.ndarray, valid_b: np.ndarray, margin: int = 20):
     return y0, y1, x0, x1
 
 
+# Same physical ceiling as TILE_MAX_DISPLACEMENT_PX below (~120 km/h over
+# the current 20-min production baseline), applied to the global vector
+# itself. Found live: an A/B test across baseline lengths against real DMI
+# data produced one reading of (dy=51, dx=177) at a 40-min baseline — 177px
+# in 40 min is ~150 km/h, physically implausible for this radar's coverage
+# area, and almost certainly phase correlation locking onto a spurious peak
+# rather than real motion. The global vector is whole-active-region data
+# (more than any single tile gets), so it's *less* prone to this than a
+# tile — but nothing was rejecting it if it happened anyway. Treat an
+# implausible global vector the same way an implausible tile is treated:
+# no reliable signal, fall back to (0, 0) rather than trust the spike.
+GLOBAL_MAX_DISPLACEMENT_PX = 70
+
+
 def estimate_motion(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                      dbz_curr: np.ndarray, valid_curr: np.ndarray) -> tuple[int, int]:
     bbox = _echo_bbox(valid_prev, valid_curr)
     if bbox is None:
         return 0, 0  # no echo in either frame — nothing to track
     y0, y1, x0, x1 = bbox
-    return compute_motion(dbz_prev[y0:y1, x0:x1], dbz_curr[y0:y1, x0:x1])
+    dy, dx = compute_motion(dbz_prev[y0:y1, x0:x1], dbz_curr[y0:y1, x0:x1])
+    if (dy * dy + dx * dx) ** 0.5 > GLOBAL_MAX_DISPLACEMENT_PX:
+        return 0, 0  # implausible spike — treat like "no reliable signal"
+    return dy, dx
 
 
 def forecast_steps_from_motion(dbz_curr: np.ndarray, valid_curr: np.ndarray,
