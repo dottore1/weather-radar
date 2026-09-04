@@ -295,3 +295,55 @@ problems in sequence:
    end-to-end against a mock auth-gated server (401 without the header,
    200 with it) before shipping — real blob URLs assigned, card renders,
    no errors. Bumped to v0.1.2.
+
+## v0.1.3: self-heal, image-fetch retry, and a narrow-card label overlap
+
+Three more findings from continued live use on real HA:
+
+1. **"Configuration error" on first dashboard load, gone after a few
+   refreshes.** Explained without a code change first (the user asked why,
+   not to change anything): `add_extra_js_url` injects an async
+   `import()` that HA's frontend fires without awaiting; Lovelace resolves
+   `type: custom:weather-radar-dmi-card` independently and usually loses
+   that race on a cold cache (network fetch takes longer than Lovelace's
+   own resolution pass), showing the generic error. A refresh serves the
+   now browser-cached file near-instantly, winning the race. Once asked to
+   actually fix it: dispatch `window.dispatchEvent(new
+   Event('location-changed'))` right after `customElements.define(...)` —
+   the same event HA's own router listens for during in-app navigation,
+   which prompts Lovelace to reprocess the current view once we're
+   actually registered. Verified it fires exactly once (not spamming) and
+   doesn't error when nothing is listening.
+
+2. **404s on the radar image fetch, "at least 1 every replay."**
+   Playback itself (`_show()`) never fetches anything — traced this to
+   the client's 60s poll racing the server's independent 2-minute poll:
+   `_prune_png_cache` (the earlier disk-growth fix) can delete a frame id
+   in the gap between the client receiving a frame list and actually
+   requesting that frame's image. Added one retry after a 2s delay in
+   `_setFrameSrc`, which covers the far more likely case (the file wasn't
+   quite rendered yet, not that it's already gone) without retrying
+   forever on files that are genuinely pruned — those just drop out of
+   `_frames` on the next scheduled poll. Verified with a mock server
+   rigged to 404 once then succeed: image ends up with a real blob URL
+   after the retry.
+
+3. **"Nu" label overlapping the timestamp tick.** The ticks row still
+   included `nowIdx` as its flex-centered middle entry (at exactly 50%)
+   alongside the separately, correctly-positioned "Nu" label (at the
+   marker's true `nowPct%`, typically ~57% for the real 13-observed+9-
+   forecast frame count) — close enough together to overlap once the card
+   renders at a realistic HA dashboard width, which is much narrower than
+   the dev harness's full-width test page this was tuned against. Since
+   the current time is already shown in the map's stamp overlay, dropped
+   the redundant middle tick entirely rather than trying to fit both in a
+   tight space — ticks row is now just `[0, lastIdx]` (oldest/newest),
+   landing at the far edges with "Nu" alone in between. Verified in a
+   340px-wide container with realistic 22-frame data (mirroring the
+   client's actual first-hand report) that all three labels stay
+   separated. `dev/index.html` deliberately left as-is — it doesn't hit
+   this at its own (much wider) display size, and this was a targeted fix
+   for the card specifically, not a pipeline file kept in sync like
+   render.py/nowcast.py.
+
+Bumped to v0.1.3.

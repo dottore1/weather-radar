@@ -273,8 +273,16 @@ class WeatherRadarDmiCard extends HTMLElement {
       this._nowMark.style.left = nowPct + '%';
       this._nowLabel.style.left = nowPct + '%';
 
-      this._ticksEl.innerHTML = [0, this._nowIdx, lastIdx]
-        .map(i => `<span${i === this._nowIdx ? ' style="color:var(--primary-color,#5ea1f2)"' : ''}>${fmtLocal(this._frames[i].time)}</span>`)
+      // Just the oldest/newest timestamps here, not nowIdx too — the "Nu"
+      // label already marks the current position precisely (at nowPct%,
+      // not the flex-centered 50% this row uses), and its own timestamp
+      // is already shown in the map's stamp overlay. Including nowIdx's
+      // time a third time here left two labels landing close enough
+      // together to overlap on a narrow card (plenty of room in the wide
+      // dev harness this was first tuned against, not in HA's dashboard
+      // grid).
+      this._ticksEl.innerHTML = [0, lastIdx]
+        .map(i => `<span>${fmtLocal(this._frames[i].time)}</span>`)
         .join('');
 
       // First load should land on "now" (latest observed), not the oldest
@@ -303,7 +311,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     }
   }
 
-  async _setFrameSrc(el, frameId) {
+  async _setFrameSrc(el, frameId, retrying = false) {
     try {
       const blob = await fetchAuthedBlob(this._hass, `/api/weather_radar_dmi/frame/${frameId}.png`);
       const url = URL.createObjectURL(blob);
@@ -311,7 +319,15 @@ class WeatherRadarDmiCard extends HTMLElement {
       el.dataset.objectUrl = url;
       el.src = url;
     } catch (e) {
-      // leave el.src unset — the next poll will retry
+      // The server prunes frame ids that scroll out of its serving
+      // window on its own poll cycle (every 2 min), independent of our
+      // 60s client poll — a frame id we just received can occasionally
+      // 404 if the server's window shifted in that gap. One short retry
+      // covers the much more likely case (the file wasn't quite
+      // rendered yet); if it still fails, the id is genuinely gone and
+      // the next scheduled _loadFrames() poll will drop it from
+      // _frames entirely, so no point retrying further.
+      if (!retrying) setTimeout(() => this._setFrameSrc(el, frameId, true), 2000);
     }
   }
 
@@ -347,6 +363,17 @@ class WeatherRadarDmiCard extends HTMLElement {
 }
 
 customElements.define('weather-radar-dmi-card', WeatherRadarDmiCard);
+
+// This module loads via an async dynamic import HA's frontend fires off
+// without awaiting before it renders the dashboard — a real race. If
+// Lovelace tried to resolve `type: custom:weather-radar-dmi-card` before
+// we finished registering, it shows a generic error card and has no
+// reason to reconsider it later. `location-changed` is the standard
+// event HA's own router listens for during normal in-app navigation;
+// dispatching it once here prompts Lovelace to reprocess the current
+// view now that we're actually registered, self-healing without
+// requiring a manual page reload.
+window.dispatchEvent(new Event('location-changed'));
 
 window.customCards = window.customCards || [];
 window.customCards.push({
