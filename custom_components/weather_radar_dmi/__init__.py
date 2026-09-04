@@ -8,6 +8,7 @@ manual "add resource" step.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from homeassistant.components.frontend import add_extra_js_url
@@ -17,6 +18,8 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import WeatherRadarDmiCoordinator
 from .http import WeatherRadarFrameImageView, WeatherRadarFramesView
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["image"]
 
@@ -36,6 +39,44 @@ async def _async_register_static_path(hass: HomeAssistant) -> None:
         hass.http.register_static_path(CARD_URL, str(CARD_PATH), cache_headers=True)
 
 
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Registers the card as a standard Lovelace resource — the same
+    mechanism HACS itself uses for user-installed cards. add_extra_js_url
+    (called alongside this, not instead of it) turned out to be
+    unreliable in practice: on a real instance, its injected inline
+    `import(url)` sometimes never actually fires on first page load, while
+    manually re-running the identical import() always worked — see
+    PLAN-HA-COMPONENT.md's investigation. The standard resources path
+    every other HACS card already uses (real `<script src>` tags) doesn't
+    have that problem. Keeping add_extra_js_url too is harmless: ES
+    modules dedupe by resolved URL, so a module registered both ways
+    still only executes once.
+
+    This uses hass.data["lovelace"].resources, an internal API with no
+    public contract for third-party use, and one that only exists for
+    storage-mode dashboards (not YAML-mode Lovelace configs) — so this is
+    entirely best-effort. Any failure is logged, never raised: the
+    integration's actual data pipeline works regardless, and the user can
+    always add the resource manually (Settings > Dashboards > Resources)
+    if this doesn't take on their setup."""
+    lovelace_data = hass.data.get("lovelace")
+    if lovelace_data is None:
+        return
+    try:
+        resources = lovelace_data.resources
+        for item in resources.async_items():
+            if item.get("url") == CARD_URL:
+                return
+        await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+    except Exception:  # noqa: BLE001 - best-effort; see docstring
+        _LOGGER.warning(
+            "Could not auto-register the DMI Vejrradar Lovelace resource; "
+            "add it manually (Settings > Dashboards > Resources, type "
+            "JavaScript Module) if the card doesn't load: %s",
+            CARD_URL,
+        )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     coordinator = WeatherRadarDmiCoordinator(hass)
@@ -50,6 +91,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(WeatherRadarFrameImageView(hass, coordinator))
         await _async_register_static_path(hass)
         add_extra_js_url(hass, CARD_URL)
+        await _async_register_lovelace_resource(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

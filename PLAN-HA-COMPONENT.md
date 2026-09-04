@@ -347,3 +347,55 @@ Three more findings from continued live use on real HA:
    render.py/nowcast.py.
 
 Bumped to v0.1.3.
+
+## v0.1.4: the self-heal from v0.1.3 didn't fix the real problem
+
+Live-debugged the "Configuration error" issue directly against the
+user's real HA instance (Chrome, connected via claude-in-chrome) rather
+than guessing further. Findings:
+
+- The user's dashboard has ~35 other HACS cards (m3-cards, button-card,
+  mini-graph-card, etc.), and every one loads successfully every time —
+  their console version banners all fire on every page load.
+- Our `import("/weather_radar_dmi/weather-radar-dmi-card.js")` call *is*
+  present, correctly formed, in the page's bootstrap `<script>` (right
+  next to `/hacsfiles/iconset.js`) — confirmed by reading
+  `document.querySelectorAll('script')` directly. But after a hard
+  reload, `customElements.get('weather-radar-dmi-card')` stayed
+  `undefined`, and manually re-running the *exact same* `import(...)`
+  call in the console succeeded instantly, every time.
+- That combination — the trigger is present and well-formed, but never
+  actually results in a real import, while manually firing the identical
+  call always works — means v0.1.3's `location-changed` self-heal was
+  solving the wrong layer: it only prompts Lovelace to *re-check* for an
+  already-loaded element. If the import itself never fires, there's
+  nothing to find.
+- The other 35 cards are all HACS-managed and load via HA's standard
+  Lovelace **resources** mechanism (real `<script src="...">` tags — you
+  can see the `?hacstag=...` cache-busting HACS adds). Ours used
+  `add_extra_js_url`, which works by injecting a combined inline
+  `<script>import(url1);import(url2)</script>` block instead. That's the
+  officially documented integration API for this, but it's evidently
+  less reliable in practice than the resources path every other card on
+  this dashboard was already using successfully.
+
+**Fix**: `_async_register_lovelace_resource` in `__init__.py` now also
+registers the card via `hass.data["lovelace"].resources` — the same
+mechanism HACS itself uses. Kept `add_extra_js_url` too rather than
+replacing it: ES modules dedupe by resolved URL, so a module registered
+both ways still only executes once, and this is a low-cost hedge in case
+some other HA version/setup behaves differently. This uses an internal,
+undocumented-for-third-party-use API with no contract across HA versions
+and no equivalent for YAML-mode dashboards, so the whole thing is
+wrapped to log-and-continue on failure rather than block setup — the
+core data pipeline works either way, and manually adding the resource
+(Settings > Dashboards > Resources) remains a working fallback. Added
+`"lovelace"` to `after_dependencies` (a soft ordering hint, not a hard
+`dependencies` entry like `http` — `lovelace` isn't required for the
+integration's core function, only for this best-effort convenience).
+
+Three new tests in `test_init.py` cover: registration happens when
+`hass.data["lovelace"]` is present, an already-registered URL isn't
+duplicated on a later setup, and setup still succeeds cleanly if the
+resources API misbehaves (simulating YAML-mode or a future HA version
+shaping this differently). 60 tests pass. Bumped to v0.1.4.
