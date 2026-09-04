@@ -72,16 +72,73 @@ def test_motion_field_recovers_independent_opposing_cells(pipeline_impl):
     assert dx_field[300, 130] > 0 and dx_field[300, 470] < 0
 
 
-def test_motion_field_blending_stays_directionally_distinct_around_the_global_vector(pipeline_impl):
+def test_motion_field_blending_stays_directionally_distinct(pipeline_impl):
+    """Two cells with no coherent overall drift between them (opposing,
+    equal-and-opposite motion) should still blend toward *distinct*
+    per-tile outputs — pulled toward each cell's own true direction, not
+    collapsed to one shared value — even though the anchor itself (now a
+    consensus of the tiles, see TILE_CONSENSUS_MIN_TRUST/TILE_CONSENSUS_
+    MIN_TILES) is honestly near zero for this symmetric case."""
     nowcast = pipeline_impl.nowcast
     dbz_prev, valid_prev, dbz_curr, valid_curr, _, _ = _opposing_cells_grids()
-    global_dy, global_dx = nowcast.estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
     dy_field, dx_field = nowcast.estimate_motion_field(dbz_prev, valid_prev, dbz_curr, valid_curr)
-    # >=, not strict >: the claim is "doesn't regress past the global
-    # vector," not "must exceed it" — landing exactly on it is a legitimate
-    # outcome of the trust-weighted blend, not a sign the blending broke.
-    assert dx_field[300, 130] >= global_dx
-    assert dx_field[300, 470] <= global_dx
+    assert dx_field[300, 130] > 0  # pulled toward the left cell's true +dx
+    assert dx_field[300, 470] < 0  # pulled toward the right cell's true -dx
+    assert dx_field[300, 130] > dx_field[300, 470]
+
+
+def test_motion_field_anchor_prefers_tile_consensus_over_a_bad_whole_frame_reading(pipeline_impl, monkeypatch):
+    """The real-world bug this fixes: broad, near-domain-filling
+    precipitation can make the whole-frame correlation read near-zero
+    even when individual tiles clearly agree on real, consistent motion
+    (confirmed live against DMI's own radar, 2026-09-04 — see nowcast.py's
+    TILE_CONSENSUS_MIN_TRUST/TILE_CONSENSUS_MIN_TILES comment). Force
+    estimate_motion (the whole-frame fallback) to return an obviously
+    wrong (0, 0) and verify the field still reflects what several
+    independently-agreeing, confidently-measured tiles found, instead of
+    collapsing everything toward the bad global reading."""
+    nowcast = pipeline_impl.nowcast
+    h, w = 700, 700
+    true_dy, true_dx = 0, 8
+    dbz_prev = np.zeros((h, w))
+    valid_prev = np.zeros((h, w), dtype=bool)
+    dbz_curr = np.zeros((h, w))
+    valid_curr = np.zeros((h, w), dtype=bool)
+    rng = np.random.default_rng(1)
+    # Several separated, textured (non-uniform) patches sharing the same
+    # true shift -- textured so each tile's own correlation is confident,
+    # not just a flat block with a weak/ambiguous peak.
+    for (y0, x0) in [(80, 80), (80, 380), (380, 80), (380, 380), (380, 500)]:
+        patch = 20.0 + rng.random((160, 160)) * 15.0
+        dbz_prev[y0:y0 + 160, x0:x0 + 160] = patch
+        valid_prev[y0:y0 + 160, x0:x0 + 160] = True
+        dbz_curr[y0 + true_dy:y0 + 160 + true_dy, x0 + true_dx:x0 + 160 + true_dx] = patch
+        valid_curr[y0 + true_dy:y0 + 160 + true_dy, x0 + true_dx:x0 + 160 + true_dx] = True
+
+    monkeypatch.setattr(nowcast, "estimate_motion", lambda *a, **k: (0, 0))
+    dy_field, dx_field = nowcast.estimate_motion_field(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    assert dx_field[150, 150] == pytest.approx(true_dx, abs=2)
+
+
+def test_motion_field_falls_back_to_whole_frame_when_too_few_tiles_are_trustworthy(pipeline_impl, monkeypatch):
+    """The consensus anchor only kicks in with enough trustworthy tiles
+    (TILE_CONSENSUS_MIN_TILES) — a quiet/scattered sky with too little
+    tile signal should still fall back to the whole-frame estimate,
+    exactly like before this change."""
+    nowcast = pipeline_impl.nowcast
+    h, w = 150, 150  # <= TILE_SIZE: a single tile, per _tile_starts
+    # No echo anywhere -- every tile fails TILE_MIN_VALID_PX, so there's
+    # zero tile signal to form a consensus from and this must fall back
+    # to whichever value estimate_motion returns.
+    dbz_prev = np.zeros((h, w))
+    valid_prev = np.zeros((h, w), dtype=bool)
+    dbz_curr = np.zeros((h, w))
+    valid_curr = np.zeros((h, w), dtype=bool)
+
+    monkeypatch.setattr(nowcast, "estimate_motion", lambda *a, **k: (7, 9))
+    dy_field, dx_field = nowcast.estimate_motion_field(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    assert dy_field[0, 0] == pytest.approx(7, abs=1)
+    assert dx_field[0, 0] == pytest.approx(9, abs=1)
 
 
 def test_tile_max_deviation_scales_with_global_magnitude(pipeline_impl):

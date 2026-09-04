@@ -237,6 +237,29 @@ TILE_DEVIATION_FLOOR_PX = 15
 TILE_DEVIATION_FRACTION = 0.6
 TILE_DEVIATION_CEILING_PX = 40
 
+# The global vector anchoring the field above was, until now, always the
+# separate whole-frame correlation (estimate_motion). That's a real design
+# flaw on a day with broad, near-domain-filling precipitation (confirmed
+# live 2026-09-04 against DMI's own radar, which showed a real, if modest,
+# eastward drift): whole-frame phase correlation goes genuinely ambiguous
+# when rain covers nearly the whole crop with weak internal texture and
+# content entering/exiting at the domain edges, reading near-zero even
+# though individual tiles — sharp local edges, real texture — often *do*
+# measure real, mutually-consistent motion. Anchoring everything to that
+# bad near-zero global vector produced exactly the reported symptom: tiles
+# only wobble within their small deviation allowance around zero, which
+# reads as the sky shrinking/expanding in place rather than translating.
+#
+# Fix: derive the anchor from the tiles' own measurements — a median (not
+# mean, so a cluster of similarly-confident-but-wrong tiles can't drag it
+# off, e.g. periodic-texture aliasing across a large blocky rain area)
+# across tiles trustworthy enough to count — falling back to the old
+# whole-frame correlation only when there isn't enough trustworthy tile
+# signal to form a consensus (a genuinely quiet/scattered sky with few
+# measurable tiles). See _tile_consensus_anchor below.
+TILE_CONSENSUS_MIN_TRUST = 0.15  # same 0-1 trust score used for blending; low bar, just excludes noise
+TILE_CONSENSUS_MIN_TILES = 3     # below this, a median isn't more trustworthy than the whole-frame estimate
+
 
 def _tile_max_deviation(global_dy: float, global_dx: float) -> float:
     magnitude = (global_dy * global_dy + global_dx * global_dx) ** 0.5
@@ -306,16 +329,15 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
     y_starts = _tile_starts(h, tile_size, step)
     x_starts = _tile_starts(w, tile_size, step)
 
-    # The global (cropped+windowed, whole-frame) estimate anchors the field:
-    # every tile — measured or not — gets pulled toward this shared drift
-    # (see blend step below), so the *whole* system visibly translates
-    # together instead of the sky looking like it's expanding in place.
-    fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
-    if max_deviation_px is None:
-        max_deviation_px = _tile_max_deviation(fallback_dy, fallback_dx)
-
-    dy_grid = np.full((len(y_starts), len(x_starts)), np.nan)
-    dx_grid = np.full((len(y_starts), len(x_starts)), np.nan)
+    # Pass 1: measure every tile independently, with no anchor yet — the
+    # anchor itself is now derived from these measurements below, rather
+    # than from a separate whole-frame correlation (see
+    # TILE_CONSENSUS_MIN_TRUST/TILE_CONSENSUS_MIN_TILES above for why).
+    # Only the absolute-magnitude spike check applies here; the
+    # deviation-from-anchor clip happens in a second pass once the anchor
+    # is known.
+    dy_raw = np.full((len(y_starts), len(x_starts)), np.nan)
+    dx_raw = np.full((len(y_starts), len(x_starts)), np.nan)
     trust_grid = np.zeros((len(y_starts), len(x_starts)))  # per-tile blend weight, see below
     for iy, y0 in enumerate(y_starts):
         for ix, x0 in enumerate(x_starts):
@@ -329,18 +351,7 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
                                              return_confidence=True)
             if (tdy * tdy + tdx * tdx) ** 0.5 > TILE_MAX_DISPLACEMENT_PX:
                 continue  # implausible spike — treat like "no reliable signal"
-            # Bound how far even a plausible, confidently-measured tile can
-            # differ from the shared global drift (see max_deviation_px /
-            # _tile_max_deviation above) — this is a *different* check than
-            # the absolute-magnitude one
-            # above: it catches a tile that's individually reasonable but
-            # disagrees with everything else, which the magnitude check
-            # alone can't (a tile pointing a plausible-looking 30px in a
-            # direction nothing else agrees with isn't "implausible", just
-            # inconsistent with its neighbors and the overall picture).
-            tdy = fallback_dy + np.clip(tdy - fallback_dy, -max_deviation_px, max_deviation_px)
-            tdx = fallback_dx + np.clip(tdx - fallback_dx, -max_deviation_px, max_deviation_px)
-            dy_grid[iy, ix], dx_grid[iy, ix] = tdy, tdx
+            dy_raw[iy, ix], dx_raw[iy, ix] = tdy, tdx
             # Two independent trust factors, multiplied: how sharply this
             # tile's correlation peak stood out (low inside a broad, self-
             # similar rain mass; see TILE_CONF_LOW/HIGH), and how much
@@ -350,6 +361,35 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
             conf_factor = np.clip((conf - TILE_CONF_LOW) / (TILE_CONF_HIGH - TILE_CONF_LOW), 0.0, 1.0)
             data_factor = np.clip(valid_px / TILE_DATA_SATURATE_PX, 0.0, 1.0)
             trust_grid[iy, ix] = conf_factor * data_factor
+
+    # The anchor: every tile — measured or not — gets pulled toward this
+    # shared drift (see blend step below), so the *whole* system visibly
+    # translates together instead of the sky looking like it's
+    # shrinking/expanding in place. A median of the trustworthy tiles'
+    # own measurements when there are enough of them to count; the old
+    # whole-frame correlation only as a fallback for a genuinely quiet/
+    # scattered sky with too few measurable tiles to form a consensus.
+    trustworthy = (trust_grid >= TILE_CONSENSUS_MIN_TRUST) & ~np.isnan(dy_raw)
+    if int(trustworthy.sum()) >= TILE_CONSENSUS_MIN_TILES:
+        fallback_dy = float(np.median(dy_raw[trustworthy]))
+        fallback_dx = float(np.median(dx_raw[trustworthy]))
+    else:
+        fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
+    if max_deviation_px is None:
+        max_deviation_px = _tile_max_deviation(fallback_dy, fallback_dx)
+
+    # Pass 2: bound how far even a plausible, confidently-measured tile can
+    # differ from the shared anchor (see max_deviation_px /
+    # _tile_max_deviation above) — this is a *different* check than the
+    # absolute-magnitude one in pass 1: it catches a tile that's
+    # individually reasonable but disagrees with everything else, which the
+    # magnitude check alone can't (a tile pointing a plausible-looking 30px
+    # in a direction nothing else agrees with isn't "implausible", just
+    # inconsistent with its neighbors and the overall picture).
+    dy_grid = np.where(np.isnan(dy_raw), np.nan,
+                        fallback_dy + np.clip(dy_raw - fallback_dy, -max_deviation_px, max_deviation_px))
+    dx_grid = np.where(np.isnan(dx_raw), np.nan,
+                        fallback_dx + np.clip(dx_raw - fallback_dx, -max_deviation_px, max_deviation_px))
 
     # Smooth out single-tile noise (a tile can pass the magnitude clamp and
     # still be a spurious/wrong-direction outlier relative to its neighbors)
