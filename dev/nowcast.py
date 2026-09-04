@@ -260,15 +260,76 @@ TILE_DEVIATION_CEILING_PX = 25
 # only wobble within their small deviation allowance around zero, which
 # reads as the sky shrinking/expanding in place rather than translating.
 #
-# Fix: derive the anchor from the tiles' own measurements — a median (not
-# mean, so a cluster of similarly-confident-but-wrong tiles can't drag it
-# off, e.g. periodic-texture aliasing across a large blocky rain area)
-# across tiles trustworthy enough to count — falling back to the old
-# whole-frame correlation only when there isn't enough trustworthy tile
-# signal to form a consensus (a genuinely quiet/scattered sky with few
-# measurable tiles). See _tile_consensus_anchor below.
+# Fix: derive the anchor from the tiles' own measurements — a *geometric*
+# median (not two independent per-axis medians, and not the mean; see
+# _geometric_median's docstring for why) across tiles trustworthy enough
+# to count — falling back to the old whole-frame correlation only when
+# there isn't enough trustworthy tile signal to form a consensus (a
+# genuinely quiet/scattered sky with few measurable tiles).
 TILE_CONSENSUS_MIN_TRUST = 0.15  # same 0-1 trust score used for blending; low bar, just excludes noise
 TILE_CONSENSUS_MIN_TILES = 3     # below this, a median isn't more trustworthy than the whole-frame estimate
+
+# Pooling across the whole observed history (estimate_consensus_anchor)
+# is far more robust than any single pair, but weighting every pair
+# equally has its own failure mode: a real system that's accelerating or
+# intensifying over the ~2h window makes older, slower pairs drag the
+# pooled average below the *current* speed — reported live as forecast
+# motion visibly decelerating right at the observed-to-forecast
+# transition, even though the direction was already correct. Recency
+# weighting fixes this without giving up the robustness pooling exists
+# for: each pair's tiles get scaled by this halving every
+# CONSENSUS_RECENCY_HALF_LIFE_STEPS steps back from the most recent
+# pair, so the last ~20 minutes dominate while the fuller ~2h history
+# still contributes real weight rather than being ignored outright.
+#
+# Lowered once already (4 -> 2, i.e. ~40min -> ~20min half-life) after
+# live feedback that the forecast still looked slower than the observed
+# frames even with recency weighting in place — verified against real
+# data that shortening the half-life further does keep raising the
+# anchor's magnitude (a lower half-life leans more on the most recent,
+# fastest-moving pairs), without collapsing the anchor's direction.
+# Going much lower than this starts trading away the robustness pooling
+# exists for in the first place — at half_life=1 the older 90% of the
+# 2h history barely counts at all, close to just trusting the single
+# most recent pair again (the original single-pair-noise problem this
+# whole mechanism exists to avoid).
+CONSENSUS_RECENCY_HALF_LIFE_STEPS = 2
+
+
+def _geometric_median(points: np.ndarray, weights: np.ndarray | None = None,
+                       max_iter: int = 50, eps: float = 1e-3) -> tuple[float, float]:
+    """The 2D point minimizing total (weighted) Euclidean distance to
+    every point in `points` (an (N, 2) array of (dy, dx) tile vectors) —
+    Weiszfeld's algorithm. This is *not* the same thing as taking
+    median(dy) and median(dx) separately, and the difference matters a
+    lot here: tiles routinely agree reasonably well on *speed* while
+    disagreeing somewhat on *direction* (real wind has angular spread) —
+    two independent per-axis medians let positive and negative
+    components partially cancel, collapsing the resultant magnitude even
+    though every individual tile measured real, fast motion. Confirmed
+    live (2026-09-04): a per-axis median produced a 7px anchor against a
+    measured per-tile median *magnitude* of 23px — a >3x understatement
+    that read as "the forecast moves too slowly." The geometric median
+    doesn't have this failure mode: it operates on the actual 2D points,
+    not their axis-wise projections, so it stays close to the cloud of
+    real vectors instead of an artifact of decomposing them into x/y.
+
+    weights: optional per-point weight (e.g. each tile's own trust
+    score) — a higher-weighted point pulls the result toward itself more
+    strongly. Defaults to equal weight for every point."""
+    if weights is None:
+        weights = np.ones(len(points))
+    y = np.average(points, axis=0, weights=weights)
+    for _ in range(max_iter):
+        dists = np.linalg.norm(points - y, axis=1)
+        dists = np.maximum(dists, eps)  # avoid dividing by ~0 at an exact point match
+        w = weights / dists
+        y_new = np.average(points, axis=0, weights=w)
+        if np.linalg.norm(y_new - y) < eps:
+            y = y_new
+            break
+        y = y_new
+    return float(y[0]), float(y[1])
 
 
 def _tile_max_deviation(global_dy: float, global_dx: float) -> float:
@@ -320,35 +381,26 @@ def _upsample_field(grid: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
     return np.asarray(resized, dtype=np.float32)
 
 
-def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
-                           dbz_curr: np.ndarray, valid_curr: np.ndarray,
-                           tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
-                           min_valid_px: int = TILE_MIN_VALID_PX,
-                           blend_alpha: float = TILE_BLEND_ALPHA,
-                           max_deviation_px: float | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (dy_field, dx_field): dense per-pixel arrays, same shape as
-    the input, giving a local motion vector at every pixel.
-
-    max_deviation_px: how far any tile's vector may differ from the global
-    one (see TILE_DEVIATION_FLOOR_PX/FRACTION/CEILING). Leave as None (the
-    default, used in production) to scale it with the global vector's own
-    magnitude; pass an explicit number to override — mainly for tests that
-    want to isolate the underlying per-tile mechanism from this cap."""
+def _measure_tiles(dbz_prev: np.ndarray, valid_prev: np.ndarray,
+                    dbz_curr: np.ndarray, valid_curr: np.ndarray,
+                    tile_size: int, overlap: int, min_valid_px: int
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Runs per-tile phase correlation independently across overlapping
+    tiles for one frame pair, with no anchor/deviation-clamping applied
+    yet. Returns (dy_raw, dx_raw, trust_grid): NaN-filled (n_tiles_y,
+    n_tiles_x) arrays (NaN wherever a tile had too little signal or an
+    implausible spike to trust) and a 0-1 trust score per measured tile
+    (see estimate_motion_field's confidence-weighting comment for what
+    trust means). Shared by estimate_motion_field (measures the single
+    current baseline/curr pair) and estimate_consensus_anchor (pools
+    this across every pair in a longer observed history)."""
     h, w = dbz_prev.shape
     step = tile_size - overlap
     y_starts = _tile_starts(h, tile_size, step)
     x_starts = _tile_starts(w, tile_size, step)
-
-    # Pass 1: measure every tile independently, with no anchor yet — the
-    # anchor itself is now derived from these measurements below, rather
-    # than from a separate whole-frame correlation (see
-    # TILE_CONSENSUS_MIN_TRUST/TILE_CONSENSUS_MIN_TILES above for why).
-    # Only the absolute-magnitude spike check applies here; the
-    # deviation-from-anchor clip happens in a second pass once the anchor
-    # is known.
     dy_raw = np.full((len(y_starts), len(x_starts)), np.nan)
     dx_raw = np.full((len(y_starts), len(x_starts)), np.nan)
-    trust_grid = np.zeros((len(y_starts), len(x_starts)))  # per-tile blend weight, see below
+    trust_grid = np.zeros((len(y_starts), len(x_starts)))
     for iy, y0 in enumerate(y_starts):
         for ix, x0 in enumerate(x_starts):
             y1, x1 = y0 + tile_size, x0 + tile_size
@@ -371,20 +423,143 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
             conf_factor = np.clip((conf - TILE_CONF_LOW) / (TILE_CONF_HIGH - TILE_CONF_LOW), 0.0, 1.0)
             data_factor = np.clip(valid_px / TILE_DATA_SATURATE_PX, 0.0, 1.0)
             trust_grid[iy, ix] = conf_factor * data_factor
+    return dy_raw, dx_raw, trust_grid
+
+
+def estimate_consensus_anchor(frames: list[tuple[np.ndarray, np.ndarray]],
+                               tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
+                               min_valid_px: int = TILE_MIN_VALID_PX) -> tuple[float, float] | None:
+    """Pools tile measurements across *every consecutive pair* in a
+    chronological list of observed (dbz, valid) frames — e.g. the full
+    ~2h observed history the coordinator already has on hand, not just
+    the single most-recent baseline/curr pair — and returns one
+    geometric-median anchor in "per frame-to-frame step" units (e.g. per
+    DMI's ~10-min publish cadence). Scale the result up before using it
+    as estimate_motion_field's anchor_override if the pair you're
+    building a field from spans more than one such step (e.g. by
+    MOTION_BASELINE_STEPS).
+
+    Why this exists: a single baseline pair can show genuinely
+    conflicting, multi-modal tile motion on a complex weather day —
+    several comparably-confident tile clusters pointing in substantially
+    different directions (verified live, 2026-09-04: real, differently-
+    directed high-trust clusters across the domain, not just noise
+    around one true value). No aggregation of *that one pair's* tiles —
+    median, geometric median, trimming — can manufacture a coherent
+    single answer the underlying data doesn't have. Pooling across many
+    consecutive pairs instead lets a persistent, real advection
+    direction reinforce itself across repeated independent
+    measurements, while any single pair's transient/local disagreement
+    gets diluted by the rest rather than dominating the whole estimate.
+
+    Returns None if there isn't enough pooled trustworthy signal across
+    the whole history to trust a consensus — the caller should fall back
+    to whatever it would otherwise use (estimate_motion_field's own
+    single-pair fallback if anchor_override isn't passed at all)."""
+    pairs = list(zip(frames, frames[1:]))
+    all_points, all_trust = [], []
+    for pair_index, ((dbz_prev, valid_prev), (dbz_curr, valid_curr)) in enumerate(pairs):
+        dy_raw, dx_raw, trust_grid = _measure_tiles(
+            dbz_prev, valid_prev, dbz_curr, valid_curr, tile_size, overlap, min_valid_px)
+        measured = ~np.isnan(dy_raw)
+        if not measured.any():
+            continue
+        # See CONSENSUS_RECENCY_HALF_LIFE_STEPS: steps_back=0 for the most
+        # recent pair (pair_index == len(pairs)-1), growing for older ones.
+        steps_back = (len(pairs) - 1) - pair_index
+        recency_weight = 0.5 ** (steps_back / CONSENSUS_RECENCY_HALF_LIFE_STEPS)
+        all_points.append(np.stack([dy_raw[measured], dx_raw[measured]], axis=1))
+        all_trust.append(trust_grid[measured] * recency_weight)
+    if not all_points:
+        return None
+    points = np.concatenate(all_points, axis=0)
+    trust = np.concatenate(all_trust, axis=0)
+    trustworthy = trust >= TILE_CONSENSUS_MIN_TRUST
+    if int(trustworthy.sum()) < TILE_CONSENSUS_MIN_TILES:
+        return None
+    return _geometric_median(points[trustworthy], weights=trust[trustworthy])
+
+
+def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
+                           dbz_curr: np.ndarray, valid_curr: np.ndarray,
+                           tile_size: int = TILE_SIZE, overlap: int = TILE_OVERLAP,
+                           min_valid_px: int = TILE_MIN_VALID_PX,
+                           blend_alpha: float = TILE_BLEND_ALPHA,
+                           max_deviation_px: float | None = None,
+                           anchor_override: tuple[float, float] | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Returns (dy_field, dx_field): dense per-pixel arrays, same shape as
+    the input, giving a local motion vector at every pixel.
+
+    max_deviation_px: how far any tile's vector may differ from the global
+    one (see TILE_DEVIATION_FLOOR_PX/FRACTION/CEILING). Leave as None (the
+    default, used in production) to scale it with the global vector's own
+    magnitude; pass an explicit number to override — mainly for tests that
+    want to isolate the underlying per-tile mechanism from this cap.
+
+    anchor_override: use this (dy, dx) as the shared-drift anchor instead
+    of computing one from dbz_prev/dbz_curr alone — see
+    estimate_consensus_anchor, which is what production actually uses to
+    build this. Must already be scaled to the same baseline duration
+    dbz_prev/dbz_curr spans (estimate_consensus_anchor returns per-step
+    units; the caller scales up by however many steps the baseline pair
+    covers). Per-tile measurement and the spatial field itself still come
+    from dbz_prev/dbz_curr as normal — only the anchor they get compared
+    and blended against changes."""
+    h, w = dbz_prev.shape
+    dy_raw, dx_raw, trust_grid = _measure_tiles(
+        dbz_prev, valid_prev, dbz_curr, valid_curr, tile_size, overlap, min_valid_px)
+
+    # Smooth out single-tile noise *before* it can pollute the anchor below
+    # — a tile can pass both trust checks and still be a spurious outlier
+    # relative to its neighbors (individual ~180px tiles are small enough,
+    # relative to a fast-moving system's true displacement, to be at real
+    # risk of phase-correlation aliasing: locking onto a wrong, sometimes
+    # near-opposite-looking peak). Verified live (2026-09-04): among tiles
+    # otherwise agreeing on a real ~25px eastward drift, isolated tiles
+    # measured 59px in unrelated directions — physically implausible for a
+    # single coherently-advecting system, and exactly the shape of an
+    # aliasing artifact rather than real local variation. Confirmed via
+    # standard-deviation check that these weren't just flat/textureless
+    # tiles trivially "agreeing with themselves". Computing the anchor from
+    # such unsmoothed raw tiles let isolated artifacts drag the *aggregate*
+    # direction/speed away from what the combined observed radar actually
+    # shows, even though most tiles individually had it right. See
+    # _median_filter_grid's docstring for why this must run before any
+    # fallback-value filling — dy_raw/dx_raw still have real measurement-
+    # vs-no-data (NaN) semantics at this point, unlike a later grid that's
+    # partly filled with placeholder values. trust_grid isn't smoothed —
+    # it's a per-tile confidence weight, not a value that needs spatial
+    # consistency with its neighbors.
+    dy_smooth = _median_filter_grid(dy_raw)
+    dx_smooth = _median_filter_grid(dx_raw)
 
     # The anchor: every tile — measured or not — gets pulled toward this
     # shared drift (see blend step below), so the *whole* system visibly
-    # translates together instead of the sky looking like it's
-    # shrinking/expanding in place. A median of the trustworthy tiles'
-    # own measurements when there are enough of them to count; the old
-    # whole-frame correlation only as a fallback for a genuinely quiet/
-    # scattered sky with too few measurable tiles to form a consensus.
-    trustworthy = (trust_grid >= TILE_CONSENSUS_MIN_TRUST) & ~np.isnan(dy_raw)
-    if int(trustworthy.sum()) >= TILE_CONSENSUS_MIN_TILES:
-        fallback_dy = float(np.median(dy_raw[trustworthy]))
-        fallback_dx = float(np.median(dx_raw[trustworthy]))
+    # translates together, in the same overall direction and speed as the
+    # combined observed radar, instead of the sky looking like it's
+    # shrinking/expanding in place.
+    #
+    # anchor_override (production always passes one — see
+    # estimate_consensus_anchor) takes priority over anything derivable
+    # from just this one pair: pooling across the fuller observed history
+    # is strictly more robust than any aggregation of a single pair's
+    # tiles can be, for the same reason _geometric_median's docstring
+    # explains for per-axis medians — a single pair can lack a coherent
+    # answer the data simply doesn't have. Without an override (tests
+    # exercising this function in isolation, or too little pooled
+    # history), fall back to a geometric median of this pair's own
+    # trustworthy (now spatially-smoothed) tiles when there are enough of
+    # them to count, or the old whole-frame correlation for a genuinely
+    # quiet/scattered sky with too few measurable tiles either way.
+    if anchor_override is not None:
+        fallback_dy, fallback_dx = anchor_override
     else:
-        fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
+        trustworthy = (trust_grid >= TILE_CONSENSUS_MIN_TRUST) & ~np.isnan(dy_smooth)
+        if int(trustworthy.sum()) >= TILE_CONSENSUS_MIN_TILES:
+            points = np.stack([dy_smooth[trustworthy], dx_smooth[trustworthy]], axis=1)
+            fallback_dy, fallback_dx = _geometric_median(points, weights=trust_grid[trustworthy])
+        else:
+            fallback_dy, fallback_dx = estimate_motion(dbz_prev, valid_prev, dbz_curr, valid_curr)
     if max_deviation_px is None:
         max_deviation_px = _tile_max_deviation(fallback_dy, fallback_dx)
 
@@ -395,21 +570,15 @@ def estimate_motion_field(dbz_prev: np.ndarray, valid_prev: np.ndarray,
     # individually reasonable but disagrees with everything else, which the
     # magnitude check alone can't (a tile pointing a plausible-looking 30px
     # in a direction nothing else agrees with isn't "implausible", just
-    # inconsistent with its neighbors and the overall picture).
-    dy_grid = np.where(np.isnan(dy_raw), np.nan,
-                        fallback_dy + np.clip(dy_raw - fallback_dy, -max_deviation_px, max_deviation_px))
-    dx_grid = np.where(np.isnan(dx_raw), np.nan,
-                        fallback_dx + np.clip(dx_raw - fallback_dx, -max_deviation_px, max_deviation_px))
-
-    # Smooth out single-tile noise (a tile can pass the magnitude clamp and
-    # still be a spurious/wrong-direction outlier relative to its neighbors)
-    # while the grid still distinguishes "real measurement" from "no data"
-    # (NaN) — see _median_filter_grid's docstring for why this must happen
-    # before the blend/fallback steps below, not after. trust_grid isn't
-    # smoothed — it's a per-tile confidence weight, not a value that needs
-    # spatial consistency with its neighbors.
-    dy_grid = _median_filter_grid(dy_grid)
-    dx_grid = _median_filter_grid(dx_grid)
+    # inconsistent with its neighbors and the overall picture). Built from
+    # the smoothed grid, not the raw one — real per-tile variation still
+    # comes through (the clamp still allows every tile up to
+    # max_deviation_px of its own character), just without a lone aliased
+    # tile's full, uncorrected magnitude.
+    dy_grid = np.where(np.isnan(dy_smooth), np.nan,
+                        fallback_dy + np.clip(dy_smooth - fallback_dy, -max_deviation_px, max_deviation_px))
+    dx_grid = np.where(np.isnan(dx_smooth), np.nan,
+                        fallback_dx + np.clip(dx_smooth - fallback_dx, -max_deviation_px, max_deviation_px))
 
     # Blend measured tiles *toward* the global vector rather than trusting
     # them outright, weighted by each tile's own trust score. Without this,

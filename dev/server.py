@@ -28,7 +28,7 @@ from render import (  # noqa: E402
     OUT_WIDTH, OUT_HEIGHT, OUT_LON_MIN, OUT_LON_MAX, OUT_LAT_MIN, OUT_LAT_MAX,
     WORK_WIDTH, WORK_HEIGHT, WORK_LON_MIN, WORK_LON_MAX, WORK_LAT_MIN, WORK_LAT_MAX,
 )
-from nowcast import estimate_motion_field, forecast_steps_from_field  # noqa: E402
+from nowcast import estimate_consensus_anchor, estimate_motion_field, forecast_steps_from_field  # noqa: E402
 
 PORT = 8765
 ITEMS_URL = (
@@ -115,20 +115,42 @@ MOTION_BASELINE_STEPS = 2  # estimate motion over a 20-min gap (items[-3] -> ite
 
 
 def _compute_forecast_sync(items: list[dict]) -> list[dict]:
-    """The actual forecast work: 2 downloads (unless already cached — see
-    get_decoded), 2 padded reprojections, an FFT motion estimate, and 9
-    shift+render steps. Expensive (~1.3s+) — see get_forecast_entries()
-    below for how callers avoid paying this on every poll."""
+    """The actual forecast work: downloads (unless already cached — see
+    get_decoded), padded reprojections, an FFT motion estimate pooled
+    across the whole observed history (see estimate_consensus_anchor),
+    and 9 shift+render steps. Expensive (~1.3s+) — see
+    get_forecast_entries() below for how callers avoid paying this on
+    every poll."""
     if len(items) <= MOTION_BASELINE_STEPS:
         return []
-    baseline_item, curr_item = items[-1 - MOTION_BASELINE_STEPS], items[-1]
-    dbz_base, valid_base = get_grid_work(baseline_item)
-    dbz_curr, valid_curr = get_grid_work(curr_item)
+
+    # The anchor driving the field's overall direction/speed comes from
+    # pooling tile measurements across the *whole* observed history
+    # (items, ~13 frames / ~2h at DMI's ~10-min cadence) rather than just
+    # the baseline/curr pair below — a single pair can show genuinely
+    # conflicting tile motion on a complex weather day that no
+    # aggregation of *that pair alone* can resolve; see
+    # estimate_consensus_anchor's docstring. estimate_consensus_anchor
+    # returns per-single-step (~10-min) units; scale up by
+    # MOTION_BASELINE_STEPS to match the baseline/curr pair's own
+    # duration, which is what estimate_motion_field's per-tile deviation
+    # clamping is calibrated against.
+    history_frames = [get_grid_work(it) for it in items]
+    dbz_base, valid_base = history_frames[-1 - MOTION_BASELINE_STEPS]
+    dbz_curr, valid_curr = history_frames[-1]
+    curr_item = items[-1]
+    anchor = estimate_consensus_anchor(history_frames)
+    anchor_override = (
+        (anchor[0] * MOTION_BASELINE_STEPS, anchor[1] * MOTION_BASELINE_STEPS)
+        if anchor is not None else None
+    )
+
     # Piecewise (tile-based) motion field instead of one global vector — see
     # dev/nowcast.py and PLAN-DMI-MIGRATION.md for why: a single vector can
     # only slide the whole frame rigidly, and can't represent different
     # regions of the sky moving differently.
-    dy_field_baseline, dx_field_baseline = estimate_motion_field(dbz_base, valid_base, dbz_curr, valid_curr)
+    dy_field_baseline, dx_field_baseline = estimate_motion_field(
+        dbz_base, valid_base, dbz_curr, valid_curr, anchor_override=anchor_override)
     dy_field = dy_field_baseline / MOTION_BASELINE_STEPS
     dx_field = dx_field_baseline / MOTION_BASELINE_STEPS
     steps = forecast_steps_from_field(dbz_curr, valid_curr, dy_field, dx_field, FCST_FRAMES)

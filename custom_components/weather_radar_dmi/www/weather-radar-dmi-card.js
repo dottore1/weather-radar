@@ -4,11 +4,15 @@
 //
 // Ported from dev/index.html (the local dev harness where the timeline
 // layout, hard-cut frame transitions, and coastline were tuned against real
-// DMI data — see PLAN-DMI-MIGRATION.md / PLAN-HA-COMPONENT.md). Card
-// chrome (button/track/ticks) binds to HA's theme CSS variables like the
-// original TV2-era weather-radar-card.js did; the radar "map" stage itself
-// keeps its own fixed dark cartographic look, matching what was tuned in
-// the harness rather than reflowing it per-theme.
+// DMI data — see PLAN-DMI-MIGRATION.md / PLAN-HA-COMPONENT.md). Every color
+// in this card — chrome (button/track/ticks) *and* the radar "map" stage
+// itself (background/coastline/city labels) — binds to HA's theme CSS
+// variables, so it switches between a dark and a light map along with the
+// rest of the dashboard rather than keeping a fixed dark look regardless of
+// theme. The colorized radar reflectivity PNGs (rendered server-side, see
+// render.py's COLOR_STOPS) are the one exception, by design: that's a
+// data-encoding color ramp, not UI chrome, and stays fixed like any other
+// weather radar's precipitation legend.
 
 const REFRESH_MS = 60 * 1000;
 const PLAY_STEP_MS = 600;
@@ -98,18 +102,19 @@ const TEMPLATE = `
   :host{ display:block; }
   ha-card{ overflow:hidden; }
   .wrap{ padding:12px 16px 16px; display:flex; flex-direction:column; }
-  .stage{ position:relative; width:100%; aspect-ratio:1000/700; background:#151a1f; border:1px solid #2a323a; border-radius:8px; overflow:hidden; }
+  .stage{ position:relative; width:100%; aspect-ratio:1000/700; background:var(--card-background-color,#151a1f); border:1px solid var(--secondary-text-color,#2a323a); border-radius:8px; overflow:hidden; }
   .stage svg,.stage img{ position:absolute; inset:0; width:100%; height:100%; display:block; }
   .stage #coast{ z-index:0; }
   .stage img{ opacity:0; z-index:1; }
   .stage img.active{ opacity:.9; }
   .stage #cities{ z-index:2; pointer-events:none; }
-  .stamp{ position:absolute; left:10px; top:10px; background:rgba(20,24,28,.85); border:1px solid #2a323a; border-radius:6px; padding:6px 10px; font-size:13px; color:#eef2f5; z-index:3; }
+  .stamp{ position:absolute; left:10px; top:10px; background:var(--card-background-color,#14181c); border:1px solid var(--secondary-text-color,#2a323a); border-radius:6px; padding:6px 10px; font-size:13px; color:var(--primary-text-color,#eef2f5); z-index:3; }
   .spinner{ position:absolute; top:50%; left:50%; width:32px; height:32px; margin:-16px 0 0 -16px; border:3px solid rgba(238,242,245,.15); border-top-color:var(--primary-color,#03a9f4); border-radius:50%; z-index:4; animation:spin .8s linear infinite; }
   .spinner[hidden]{ display:none; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
-  .city{ fill:#eef2f5; font-size:12px; font-family:inherit; paint-order:stroke; stroke:#0d1013; stroke-width:3px; }
-  .city-dot{ fill:#eef2f5; stroke:#0d1013; stroke-width:1px; }
+  .coast-poly{ fill:var(--secondary-background-color,#20262c); stroke:var(--secondary-text-color,#3a4652); stroke-width:1; }
+  .city{ fill:var(--primary-text-color,#eef2f5); font-size:12px; font-family:inherit; paint-order:stroke; stroke:var(--card-background-color,#0d1013); stroke-width:3px; }
+  .city-dot{ fill:var(--primary-text-color,#eef2f5); stroke:var(--card-background-color,#0d1013); stroke-width:1px; }
   .controls{ display:flex; align-items:center; gap:12px; margin-top:12px; }
   button{ background:var(--primary-color,#03a9f4); color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:14px; }
   .timeline{ flex:1; position:relative; height:18px; margin-bottom:18px; }
@@ -215,9 +220,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     coastPolys.forEach(poly => {
       const p = document.createElementNS(ns, 'polygon');
       p.setAttribute('points', poly.map(([lo, la]) => px(lo, la).join(',')).join(' '));
-      p.setAttribute('fill', '#20262c');
-      p.setAttribute('stroke', '#3a4652');
-      p.setAttribute('stroke-width', '1');
+      p.setAttribute('class', 'coast-poly');
       coastSvg.appendChild(p);
     });
 
