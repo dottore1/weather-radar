@@ -8,6 +8,7 @@ manual "add resource" step.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -25,6 +26,25 @@ PLATFORMS = ["image"]
 
 CARD_URL = "/weather_radar_dmi/weather-radar-dmi-card.js"
 CARD_PATH = Path(__file__).parent / "www" / "weather-radar-dmi-card.js"
+MANIFEST_PATH = Path(__file__).parent / "manifest.json"
+
+
+def _card_resource_url() -> str:
+    """CARD_URL with a `?v=<manifest version>` cache-buster.
+
+    The static path below is registered with cache_headers=True — HA's
+    "cache forever" mode (31-day max-age), meant for content-hashed,
+    truly-immutable assets like its own frontend_latest/*.js chunks. Our
+    card doesn't get a new filename each release, so without this,
+    browsers that already cached one version keep serving it for up to a
+    month after an update ships — the same "needs a hard refresh to see
+    what I just installed" pattern hit repeatedly while live-testing this
+    integration. Appending the version as a query string forces a fresh
+    fetch on every release while still letting a given version cache
+    aggressively (aiohttp's static route matches on path only, so this
+    doesn't need any change to the static path registration itself)."""
+    version = json.loads(MANIFEST_PATH.read_text())["version"]
+    return f"{CARD_URL}?v={version}"
 
 
 async def _async_register_static_path(hass: HomeAssistant) -> None:
@@ -58,16 +78,30 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     entirely best-effort. Any failure is logged, never raised: the
     integration's actual data pipeline works regardless, and the user can
     always add the resource manually (Settings > Dashboards > Resources)
-    if this doesn't take on their setup."""
+    if this doesn't take on their setup.
+
+    Matches any existing entry by CARD_URL's path alone (ignoring the
+    `?v=` query string — see _card_resource_url) and updates it in place
+    rather than only ever checking for an exact URL match: on every
+    version bump the old exact-match check would never find the
+    previous (differently-versioned) entry and would keep creating a new
+    one, piling up stale duplicate resources that each still get fetched
+    on every dashboard load."""
     lovelace_data = hass.data.get("lovelace")
     if lovelace_data is None:
         return
     try:
         resources = lovelace_data.resources
-        for item in resources.async_items():
-            if item.get("url") == CARD_URL:
-                return
-        await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+        new_url = _card_resource_url()
+        existing = next(
+            (item for item in resources.async_items()
+             if item.get("url", "").split("?")[0] == CARD_URL),
+            None,
+        )
+        if existing is None:
+            await resources.async_create_item({"res_type": "module", "url": new_url})
+        elif existing["url"] != new_url:
+            await resources.async_update_item(existing["id"], {"url": new_url})
     except Exception:  # noqa: BLE001 - best-effort; see docstring
         _LOGGER.warning(
             "Could not auto-register the DMI Vejrradar Lovelace resource; "
@@ -90,7 +124,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(WeatherRadarFramesView(coordinator))
         hass.http.register_view(WeatherRadarFrameImageView(hass, coordinator))
         await _async_register_static_path(hass)
-        add_extra_js_url(hass, CARD_URL)
+        add_extra_js_url(hass, _card_resource_url())
         await _async_register_lovelace_resource(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

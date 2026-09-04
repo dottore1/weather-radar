@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.weather_radar_dmi import CARD_URL
+from custom_components.weather_radar_dmi import CARD_URL, _card_resource_url
 from custom_components.weather_radar_dmi import coordinator as coordinator_module
 from custom_components.weather_radar_dmi.const import DOMAIN
 
@@ -70,12 +70,16 @@ class _FakeResources:
     def __init__(self, existing=None):
         self._existing = existing or []
         self.created = []
+        self.updated = []
 
     def async_items(self):
         return self._existing
 
     async def async_create_item(self, data):
         self.created.append(data)
+
+    async def async_update_item(self, item_id, data):
+        self.updated.append((item_id, data))
 
 
 async def test_registers_a_lovelace_resource_when_lovelace_is_present(
@@ -92,12 +96,33 @@ async def test_registers_a_lovelace_resource_when_lovelace_is_present(
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    assert resources.created == [{"res_type": "module", "url": CARD_URL}]
+    assert resources.created == [{"res_type": "module", "url": _card_resource_url()}]
 
 
-async def test_does_not_duplicate_an_already_registered_lovelace_resource(
+async def test_does_not_duplicate_an_up_to_date_lovelace_resource(
     hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
 ):
+    _patch_dmi(monkeypatch, tmp_path)
+    resources = _FakeResources(
+        existing=[{"id": "existing", "res_type": "module", "url": _card_resource_url()}]
+    )
+    hass.data["lovelace"] = SimpleNamespace(resources=resources)
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert resources.created == []
+    assert resources.updated == []
+
+
+async def test_updates_the_lovelace_resource_url_in_place_on_a_version_change(
+    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+):
+    """A stale, differently-versioned (or unversioned pre-cache-buster)
+    entry must be updated in place, not left stale and duplicated — see
+    _async_register_lovelace_resource's docstring."""
     _patch_dmi(monkeypatch, tmp_path)
     resources = _FakeResources(existing=[{"id": "existing", "res_type": "module", "url": CARD_URL}])
     hass.data["lovelace"] = SimpleNamespace(resources=resources)
@@ -108,6 +133,7 @@ async def test_does_not_duplicate_an_already_registered_lovelace_resource(
     await hass.async_block_till_done()
 
     assert resources.created == []
+    assert resources.updated == [("existing", {"url": _card_resource_url()})]
 
 
 async def test_setup_succeeds_even_if_lovelace_resource_registration_fails(

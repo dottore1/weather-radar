@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/dottore1/weather-radar/issues",
   "iot_class": "cloud_polling",
   "requirements": ["h5py>=3.10", "numpy>=1.26", "Pillow>=10.0", "pyproj>=3.6"],
-  "version": "0.1.6"
+  "version": "0.1.7"
 }

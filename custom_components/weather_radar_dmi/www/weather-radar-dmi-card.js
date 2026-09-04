@@ -105,6 +105,9 @@ const TEMPLATE = `
   .stage img.active{ opacity:.9; }
   .stage #cities{ z-index:2; pointer-events:none; }
   .stamp{ position:absolute; left:10px; top:10px; background:rgba(20,24,28,.85); border:1px solid #2a323a; border-radius:6px; padding:6px 10px; font-size:13px; color:#eef2f5; z-index:3; }
+  .spinner{ position:absolute; top:50%; left:50%; width:32px; height:32px; margin:-16px 0 0 -16px; border:3px solid rgba(238,242,245,.15); border-top-color:var(--primary-color,#03a9f4); border-radius:50%; z-index:4; animation:spin .8s linear infinite; }
+  .spinner[hidden]{ display:none; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
   .city{ fill:#eef2f5; font-size:12px; font-family:inherit; paint-order:stroke; stroke:#0d1013; stroke-width:3px; }
   .city-dot{ fill:#eef2f5; stroke:#0d1013; stroke-width:1px; }
   .controls{ display:flex; align-items:center; gap:12px; margin-top:12px; }
@@ -129,6 +132,7 @@ const TEMPLATE = `
       <svg id="coast" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
       <svg id="cities" viewBox="0 0 1000 700" xmlns="http://www.w3.org/2000/svg"></svg>
       <div class="stamp" id="stamp">Indlæser…</div>
+      <div class="spinner" id="spinner" hidden></div>
     </div>
     <div class="controls">
       <button id="play">Play</button>
@@ -175,6 +179,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     this._playing = false;
     this._playTimer = null;
     this._hasLoadedOnce = false;
+    this._spinner.hidden = false; // hidden again once the first frame list arrives, see _loadFrames
     this._loadFrames();
     this._refreshTimer = setInterval(() => this._loadFrames(), REFRESH_MS);
     if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this._setPlaying(true);
@@ -196,6 +201,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     this._obsBar = $('obsBar');
     this._nowMark = $('nowMark');
     this._nowLabel = $('nowLabel');
+    this._spinner = $('spinner');
   }
 
   _wireControls() {
@@ -241,6 +247,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     try {
       const list = await this._hass.callApi('GET', 'weather_radar_dmi/frames');
       this._statusEl.textContent = '';
+      this._spinner.hidden = true;
       const nObs = list.filter(it => !it.forecast).length;
 
       // Diff against the existing <img> elements instead of destroying and
@@ -307,6 +314,7 @@ class WeatherRadarDmiCard extends HTMLElement {
 
       this._show(targetIdx);
     } catch (e) {
+      this._spinner.hidden = true;
       this._statusEl.textContent = 'Kunne ikke hente radardata: ' + e;
     }
   }
