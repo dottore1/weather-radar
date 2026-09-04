@@ -13,7 +13,7 @@ from tests import synth
 
 
 async def test_image_entity_is_created_and_available_after_setup(
-    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+    hass, setup_http, monkeypatch, tmp_path
 ):
     frames, hrefs = synth.make_default_dataset(tmp_path)
     fake_urlopen = synth.make_fake_urlopen(

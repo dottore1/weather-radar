@@ -12,7 +12,6 @@ import json
 import logging
 from pathlib import Path
 
-from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -61,16 +60,20 @@ async def _async_register_static_path(hass: HomeAssistant) -> None:
 
 async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """Registers the card as a standard Lovelace resource — the same
-    mechanism HACS itself uses for user-installed cards. add_extra_js_url
-    (called alongside this, not instead of it) turned out to be
-    unreliable in practice: on a real instance, its injected inline
-    `import(url)` sometimes never actually fires on first page load, while
-    manually re-running the identical import() always worked — see
-    PLAN-HA-COMPONENT.md's investigation. The standard resources path
-    every other HACS card already uses (real `<script src>` tags) doesn't
-    have that problem. Keeping add_extra_js_url too is harmless: ES
-    modules dedupe by resolved URL, so a module registered both ways
-    still only executes once.
+    mechanism HACS itself uses for user-installed cards.
+
+    This used to also call add_extra_js_url alongside this, on the
+    (documented, and wrong) assumption that ES modules just dedupe by
+    resolved URL so registering the same module both ways was harmless.
+    Live debugging traced the recurring "stuck on Configuration error
+    until a hard refresh" reports to exactly that: on a genuinely cold
+    fetch, racing a `<script type=module src=URL>` tag (from this
+    resource) against a dynamic `import(URL)` of the *same* URL (from
+    add_extra_js_url) reproduced a real browser race where
+    customElements.define() never took effect for either loader — verified
+    live by reproducing the identical "already been used with this
+    registry" collision by hand. Registering the card only this one way
+    removes the race outright rather than working around it.
 
     This uses hass.data["lovelace"].resources, an internal API with no
     public contract for third-party use, and one that only exists for
@@ -124,7 +127,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(WeatherRadarFramesView(coordinator))
         hass.http.register_view(WeatherRadarFrameImageView(hass, coordinator))
         await _async_register_static_path(hass)
-        add_extra_js_url(hass, _card_resource_url())
         await _async_register_lovelace_resource(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

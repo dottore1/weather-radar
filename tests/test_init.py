@@ -24,7 +24,7 @@ def _patch_dmi(monkeypatch, tmp_path):
 
 
 async def test_setup_entry_wires_up_views_static_path_and_image_platform(
-    hass, setup_http, mock_add_extra_js_url, hass_client, monkeypatch, tmp_path
+    hass, setup_http, hass_client, monkeypatch, tmp_path
 ):
     _patch_dmi(monkeypatch, tmp_path)
 
@@ -47,7 +47,7 @@ async def test_setup_entry_wires_up_views_static_path_and_image_platform(
     assert "weather-radar-dmi-card" in body
 
 
-async def test_unload_entry_removes_coordinator_state(hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path):
+async def test_unload_entry_removes_coordinator_state(hass, setup_http, monkeypatch, tmp_path):
     _patch_dmi(monkeypatch, tmp_path)
 
     entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN)
@@ -83,10 +83,11 @@ class _FakeResources:
 
 
 async def test_registers_a_lovelace_resource_when_lovelace_is_present(
-    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+    hass, setup_http, monkeypatch, tmp_path
 ):
-    """add_extra_js_url alone turned out to be unreliable in practice (see
-    PLAN-HA-COMPONENT.md) — this is the fallback that actually works."""
+    """The sole mechanism the card is registered through — see
+    _async_register_lovelace_resource's docstring for why add_extra_js_url
+    was dropped rather than kept alongside this."""
     _patch_dmi(monkeypatch, tmp_path)
     resources = _FakeResources()
     hass.data["lovelace"] = SimpleNamespace(resources=resources)
@@ -100,7 +101,7 @@ async def test_registers_a_lovelace_resource_when_lovelace_is_present(
 
 
 async def test_does_not_duplicate_an_up_to_date_lovelace_resource(
-    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+    hass, setup_http, monkeypatch, tmp_path
 ):
     _patch_dmi(monkeypatch, tmp_path)
     resources = _FakeResources(
@@ -118,7 +119,7 @@ async def test_does_not_duplicate_an_up_to_date_lovelace_resource(
 
 
 async def test_updates_the_lovelace_resource_url_in_place_on_a_version_change(
-    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+    hass, setup_http, monkeypatch, tmp_path
 ):
     """A stale, differently-versioned (or unversioned pre-cache-buster)
     entry must be updated in place, not left stale and duplicated — see
@@ -137,7 +138,7 @@ async def test_updates_the_lovelace_resource_url_in_place_on_a_version_change(
 
 
 async def test_setup_succeeds_even_if_lovelace_resource_registration_fails(
-    hass, setup_http, mock_add_extra_js_url, monkeypatch, tmp_path
+    hass, setup_http, monkeypatch, tmp_path
 ):
     """YAML-mode dashboards (or a future HA version) could shape this
     internal API differently — registration failing here must not take

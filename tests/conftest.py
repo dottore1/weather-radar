@@ -69,23 +69,6 @@ def pipeline_impl(request) -> PipelineImpl:
 
 
 @pytest.fixture
-def mock_add_extra_js_url(monkeypatch):
-    """Stubs out __init__.py's add_extra_js_url call. It reaches into
-    hass.data structures the `frontend` component's own async_setup
-    normally initializes; fully setting that up for real needs the
-    separate home-assistant-frontend PyPI package (the built frontend web
-    assets), which isn't part of this test environment and isn't what
-    these tests are verifying — they check that OUR setup code calls this
-    registration function, not that HA's frontend subsystem itself works
-    (that's HA core's own tested responsibility). The static-path
-    registration alongside it doesn't need this stub — it only touches our
-    own file and hass.http, both already real/working in these tests."""
-    import custom_components.weather_radar_dmi as integration
-
-    monkeypatch.setattr(integration, "add_extra_js_url", lambda hass, url: None)
-
-
-@pytest.fixture
 async def setup_http(hass):
     """Loads Home Assistant's core `http` component. A real running HA
     instance always has this ready before any integration's
