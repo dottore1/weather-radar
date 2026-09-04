@@ -187,11 +187,14 @@ TILE_MAX_DISPLACEMENT_PX = 70
 # How much of a measured tile's own vector to trust vs. the global (whole-
 # frame) vector, at most: 1.0 = fully independent per-tile motion (can look
 # like the sky "expanding" rather than moving — see estimate_motion_field's
-# docstring), 0.0 = collapses back to one rigid global shift. 0.6 keeps
-# real per-region variation visible while anchoring everything to a shared
-# overall drift. This is a ceiling — the *actual* per-tile trust used is
-# this scaled down further by that tile's own confidence (see below).
-TILE_BLEND_ALPHA = 0.6
+# docstring), 0.0 = collapses back to one rigid global shift. 0.4 (lowered
+# from an initial 0.6 — even a confidently-measured tile still visibly
+# lagged the shared drift, reported live as the field not looking like it
+# was moving "together enough") keeps some real per-region variation
+# visible while leaning noticeably more on the shared overall drift. This
+# is a ceiling — the *actual* per-tile trust used is this scaled down
+# further by that tile's own confidence (see below).
+TILE_BLEND_ALPHA = 0.4
 
 # Confidence weighting: a tile deep inside a large, broad rain mass has weak
 # internal texture (many candidate shifts look almost equally plausible —
@@ -233,9 +236,16 @@ TILE_DATA_SATURATE_PX = 3000  # combined (prev+curr) valid pixels at which the d
 # magnitude: floor (handles near-zero global), a fraction of the global
 # magnitude (preserves real angular variation when there's a strong shared
 # drift), ceiling (still bounded even for a very fast-moving system).
-TILE_DEVIATION_FLOOR_PX = 15
-TILE_DEVIATION_FRACTION = 0.6
-TILE_DEVIATION_CEILING_PX = 40
+#
+# Floor/fraction lowered a second time (15/0.6/40 -> 8/0.4/25) after the
+# TILE_BLEND_ALPHA reduction above still wasn't enough on its own -- at the
+# anchor magnitudes actually seen in practice (order 10px), the floor was
+# the binding constraint, not the fraction, so that's the one that needed
+# to move to visibly tighten how far tiles could wander from the shared
+# drift.
+TILE_DEVIATION_FLOOR_PX = 8
+TILE_DEVIATION_FRACTION = 0.4
+TILE_DEVIATION_CEILING_PX = 25
 
 # The global vector anchoring the field above was, until now, always the
 # separate whole-frame correlation (estimate_motion). That's a real design
