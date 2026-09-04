@@ -379,6 +379,29 @@ motion field:
   observed and forecast PNGs stay pixel-aligned. Verified: the +90min frame
   now has full edge-to-edge coverage, no blank margin.
 
+- **Color ramp painting radar noise floor as visible rain, making
+  everywhere look like it's raining ("wall-to-wall" coverage that didn't
+  match DMI's own reference at all).** User asked for a direct comparison
+  against DMI's live reference page (https://www.dmi.dk/#radar) for the
+  same real timestamp — our card showed near-continuous coverage across
+  the whole country, while DMI's own rendering showed a clear north-south
+  dry/wet gradient (e.g. central Jutland genuinely dry). Root cause:
+  `reproject_to_dbz_grid`'s `valid` mask only excludes the source file's
+  own nodata/undetect sentinels, not "this is real precipitation" —
+  checked the actual valid-pixel dBZ range against a live composite and
+  found it spans **-31.5 to 52.5 dBZ**, i.e. genuinely includes radar
+  noise floor / clear-air return well below any meteorologically
+  meaningful reflectivity. The old `COLOR_STOPS` first stop at 5.0 dBZ
+  (plus the gradual fade from 0→5) painted a lot of that noise as
+  faint-but-visible, washing out real dry regions into a near-continuous
+  haze. Fixed by A/B testing several thresholds (5/10/15/20 dBZ) rendered
+  from the *identical* real DMI composite, each compared side by side
+  against a DMI reference screenshot of the same file/timestamp; 20 dBZ
+  with a hard cutoff (not a gradual fade) reproduced DMI's actual
+  dry/wet contrast closely — verified visually (central Jutland's real
+  dry gap now shows as dry) and locked in with a unit test asserting
+  0/10/19.9 dBZ stay invisible while 20.5/30.0 dBZ become visible.
+
 ## Suggested order of work
 
 Start with step 1 (local harness) — it's the part you explicitly want to

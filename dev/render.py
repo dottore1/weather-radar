@@ -43,15 +43,27 @@ WORK_HEIGHT = OUT_HEIGHT + 2 * MARGIN_PX_Y
 
 # dBZ -> RGBA color ramp. Rough intensity convention (light blue = light
 # rain, through purple/magenta = heavy) — our own choice, not reused from
-# any third party. Values below the first stop are fully transparent.
+# any third party. Values below 20 dBZ are fully transparent.
+#
+# The `valid` mask (see reproject_to_dbz_grid) only excludes the source
+# file's own nodata/undetect sentinels — it does not mean "this pixel is
+# real precipitation." Real DMI composites carry valid-but-tiny and even
+# negative dBZ values (observed as low as -31.5 dBZ against live data) from
+# noise floor / clear-air return, not rain. The previous first stop at 5.0
+# painted a lot of that as faint-but-visible, washing out real dry regions
+# into a near-continuous haze. A/B tested several thresholds against DMI's
+# own reference rendering for the same real composite (see
+# PLAN-DMI-MIGRATION.md); 20 dBZ was the one that reproduced DMI's actual
+# dry/wet contrast (e.g. a genuinely dry central Jutland showing as dry,
+# not lightly shaded) rather than one continuous smear.
 COLOR_STOPS = [
-    (0.0,  (191, 230, 251, 0)),
-    (5.0,  (191, 230, 251, 170)),
-    (15.0, (111, 184, 236, 200)),
-    (25.0, (58, 111, 216, 215)),
-    (35.0, (90, 58, 176, 225)),
-    (45.0, (167, 38, 192, 235)),
-    (55.0, (233, 30, 140, 245)),
+    (0.0,   (191, 230, 251, 0)),
+    (20.0,  (191, 230, 251, 0)),
+    (20.01, (191, 230, 251, 170)),
+    (25.0,  (58, 111, 216, 215)),
+    (35.0,  (90, 58, 176, 225)),
+    (45.0,  (167, 38, 192, 235)),
+    (55.0,  (233, 30, 140, 245)),
 ]
 
 _STOP_VALUES = np.array([s[0] for s in COLOR_STOPS], dtype=np.float32)

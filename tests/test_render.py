@@ -19,6 +19,21 @@ def test_colorize_transparent_below_first_stop(pipeline_impl):
     assert rgba[0, 0, 3] == 0  # below the lowest color stop -> alpha 0
 
 
+def test_colorize_hides_noise_floor_reflectivity_not_just_negative_values(pipeline_impl):
+    """Regression test for the A/B-tested color threshold fix: real DMI
+    composites carry valid-but-tiny dBZ (observed down to -31.5 dBZ live)
+    from radar noise floor / clear-air return, not actual precipitation.
+    Marked `valid=True` doesn't mean "draw it" — only >=20 dBZ should ever
+    become visible (see COLOR_STOPS's docstring in render.py)."""
+    render = pipeline_impl.render
+    dbz = np.array([[0.0, 10.0, 19.9, 20.5, 30.0]], dtype=np.float32)
+    valid = np.ones((1, 5), dtype=bool)
+    rgba = render.colorize(dbz, valid)
+    assert list(rgba[0, :3, 3]) == [0, 0, 0], "0/10/19.9 dBZ (noise-floor-range) must stay invisible"
+    assert rgba[0, 3, 3] > 0, "20.5 dBZ (real light rain) should be visible"
+    assert rgba[0, 4, 3] > 0, "30.0 dBZ (real rain) should be visible"
+
+
 def test_colorize_invalid_pixel_is_transparent_regardless_of_value(pipeline_impl):
     render = pipeline_impl.render
     dbz = np.array([[40.0]], dtype=np.float32)
