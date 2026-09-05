@@ -157,18 +157,28 @@ const TEMPLATE = `
 </ha-card>
 `;
 
+const CONFIG_LABELS = {
+  autoplay: 'Autoplay',
+  show_home_marker: 'Show home location marker',
+};
+
 class WeatherRadarDmiCard extends HTMLElement {
   static getStubConfig() {
-    return {};
+    return { autoplay: true, show_home_marker: true };
   }
 
   // Presence alone is what flips HA's edit dialog from "This card doesn't
   // support the visual editor — YAML only" to a real Configuration tab (and,
   // in sections-view dashboards, unlocks the separate Layout tab too — see
-  // getGridOptions below). An empty schema is intentional: there's nothing
-  // to configure yet, so there's nothing to show beyond that.
+  // getGridOptions below).
   static getConfigForm() {
-    return { schema: [] };
+    return {
+      schema: [
+        { name: 'autoplay', selector: { boolean: {} } },
+        { name: 'show_home_marker', selector: { boolean: {} } },
+      ],
+      computeLabel: schema => CONFIG_LABELS[schema.name],
+    };
   }
 
   setConfig(config) {
@@ -180,11 +190,15 @@ class WeatherRadarDmiCard extends HTMLElement {
       this._cacheRefs();
       this._wireControls();
     }
+    // A live config edit (not just initial setup) re-runs setConfig on the
+    // same already-connected element — react to a toggled show_home_marker
+    // immediately rather than only on the next hass update.
+    this._syncHomeMarker();
   }
 
   set hass(hass) {
     this._hass = hass;
-    this._drawHomeMarker(hass);
+    this._syncHomeMarker();
   }
 
   getCardSize() {
@@ -212,7 +226,8 @@ class WeatherRadarDmiCard extends HTMLElement {
     this._spinner.hidden = false; // hidden again once the first frame list arrives, see _loadFrames
     this._loadFrames();
     this._refreshTimer = setInterval(() => this._loadFrames(), REFRESH_MS);
-    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this._setPlaying(true);
+    const autoplay = this._config.autoplay !== false;
+    if (autoplay && !matchMedia('(prefers-reduced-motion: reduce)').matches) this._setPlaying(true);
   }
 
   disconnectedCallback() {
@@ -272,17 +287,30 @@ class WeatherRadarDmiCard extends HTMLElement {
 
   // hass.config.latitude/longitude is HA's own configured home location
   // (Settings > System > General) — already on every hass object, no
-  // separate API call needed. Only ever drawn once: _buildMap() (which
-  // creates the #cities layer) runs from setConfig(), before Lovelace ever
-  // assigns hass for the first time, so this can't happen there; and hass
-  // gets reassigned on every HA state change, so without the
-  // _homeMarkerDrawn guard this would redraw (and duplicate) constantly.
-  _drawHomeMarker(hass) {
-    if (this._homeMarkerDrawn) return;
-    const lat = hass.config && hass.config.latitude;
-    const lon = hass.config && hass.config.longitude;
+  // separate API call needed. This is a lightweight SVG overlay, the same
+  // as the city dots — not baked into the server-rendered radar PNGs — so
+  // toggling show_home_marker is just adding/removing one element, cheap
+  // enough to do on every call rather than needing separate pre-rendered
+  // image variants. Called from both setConfig (a live config edit re-runs
+  // setConfig on the same connected element — react immediately) and the
+  // hass setter (coordinates and the DOM aren't necessarily both ready the
+  // first time either fires, so both call this and it's a no-op if
+  // whichever's missing isn't ready yet).
+  _syncHomeMarker() {
+    const citiesSvg = this.shadowRoot && this.shadowRoot.getElementById('cities');
+    if (!citiesSvg) return; // _buildMap hasn't run yet
+    const wantsMarker = this._config.show_home_marker !== false;
+    if (!wantsMarker) {
+      if (this._homeMarkerEl) {
+        this._homeMarkerEl.remove();
+        this._homeMarkerEl = null;
+      }
+      return;
+    }
+    if (this._homeMarkerEl || !this._hass) return; // already drawn, or no coordinates yet
+    const lat = this._hass.config && this._hass.config.latitude;
+    const lon = this._hass.config && this._hass.config.longitude;
     if (!lat && !lon) return; // missing, or HA's un-configured (0, 0) sentinel
-    this._homeMarkerDrawn = true;
     const [x, y] = px(lon, lat);
     const marker = document.createElementNS(ns, 'circle');
     marker.setAttribute('cx', x);
@@ -291,7 +319,8 @@ class WeatherRadarDmiCard extends HTMLElement {
     marker.setAttribute('class', 'home-marker');
     // Appended after the city dots/labels (drawn in _buildMap, which always
     // runs first) so it paints on top if it ever overlaps one.
-    this.shadowRoot.getElementById('cities').appendChild(marker);
+    citiesSvg.appendChild(marker);
+    this._homeMarkerEl = marker;
   }
 
   async _loadFrames() {
@@ -399,15 +428,7 @@ class WeatherRadarDmiCard extends HTMLElement {
     const isLatest = i === this._nowIdx;
     const isForecast = i > this._nowIdx;
     const label = isLatest ? 'Seneste' : (isForecast ? 'Prognose' : 'Observeret');
-    let text = `${label} · kl. ` + fmtLocal(f.time);
-    if (isLatest) {
-      const lagMin = Math.round((Date.now() - new Date(f.time).getTime()) / 60000);
-      text += ` (${lagMin} min.)`;
-    } else if (isForecast) {
-      const aheadMin = Math.round((new Date(f.time).getTime() - new Date(this._frames[this._nowIdx].time).getTime()) / 60000);
-      text += ` (+${aheadMin} min.)`;
-    }
-    this._stamp.textContent = text;
+    this._stamp.textContent = `${label} · kl. ` + fmtLocal(f.time);
     this._slider.value = i;
   }
 
