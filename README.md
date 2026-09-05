@@ -66,4 +66,4 @@ See [`tests/README.md`](tests/README.md).
 - `dev/` is a separate local-only test harness (no Home Assistant involved)
   used to build and tune the rendering/nowcast pipeline before it was
   ported into `custom_components/weather_radar_dmi/`. See
-  `PLAN-DMI-MIGRATION.md` and `PLAN-HA-COMPONENT.md` for the history.
+  [`CLAUDE.md`](CLAUDE.md) for the architecture/decision history.

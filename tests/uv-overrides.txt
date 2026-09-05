@@ -2,6 +2,6 @@
 # Python 3.13 on any platform (source-only, needs a C compiler). 1.4.1 has
 # full wheel coverage and is otherwise a drop-in replacement. Pass this to
 # `uv pip install --override tests/uv-overrides.txt` to force it — see
-# PLAN-HA-COMPONENT.md's "Test suite" section for the full story.
+# tests/README.md and CLAUDE.md's "Known platform gotchas".
 lru-dict>=1.4.1
 

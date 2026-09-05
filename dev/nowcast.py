@@ -1,11 +1,12 @@
-"""Simple advection nowcast: estimate a single global motion vector between
-two consecutive reflectivity grids (FFT phase correlation) and extrapolate
-the most recent grid forward by repeating that motion.
+"""Advection nowcast: estimate a spatially-varying motion field between
+reflectivity grids (piecewise per-tile FFT phase correlation, anchored to a
+consensus pooled across the full observed history) and extrapolate the most
+recent grid forward along it.
 
 This is Lagrangian persistence — assumes the rain keeps moving the way it's
 currently moving, with no growth/decay modeling. Good enough for ~90 min,
 degrades toward the end of that window. Computed entirely from DMI's own
-licensed composite data (see PLAN-DMI-MIGRATION.md).
+licensed composite data. See CLAUDE.md for how this evolved and why.
 """
 from __future__ import annotations
 
@@ -33,8 +34,8 @@ def compute_motion(dbz_prev: np.ndarray, dbz_curr: np.ndarray,
     # float32/complex64 rather than the numpy FFT default of float64/
     # complex128: this is peak-finding on a correlation surface, not
     # precision-sensitive science, and this array is the single biggest
-    # transient allocation in a poll cycle (see PLAN-HA-COMPONENT.md's
-    # resource-usage benchmark) — halving it directly halves that peak.
+    # transient allocation in a poll cycle (measured directly against real
+    # data) — halving it directly halves that peak.
     # numpy's fft2 preserves the input's precision family (float32 in ->
     # complex64 out), so casting here is enough to keep everything below
     # at half width.
@@ -201,7 +202,7 @@ TILE_BLEND_ALPHA = 0.4
 # low peak-to-mean ratio from compute_motion), while a tile right at a
 # sharp rain/no-rain edge locks onto a confident, distinctive peak. Blending
 # every tile by the same fixed ratio doesn't distinguish these — verified
-# empirically (see PLAN-DMI-MIGRATION.md): large heavily-covered tiles
+# empirically against real data: large heavily-covered tiles
 # scored ~7-10, small sharp-edge tiles scored 45-190+. But a tiny sliver of
 # a tile (barely above TILE_MIN_VALID_PX) can also score artificially high
 # just because there's almost nothing for it to disagree with itself about

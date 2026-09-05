@@ -2,8 +2,8 @@
 
 Zero-config on purpose: the radar composite covers Denmark as a whole (no
 per-location setup) and DMI's Open Data radar endpoint needs no API key
-(confirmed during the dev-harness migration — see PLAN-DMI-MIGRATION.md).
-Single-instance only, since a second entry would just poll the same data.
+(confirmed directly against the live API during development). Single-
+instance only, since a second entry would just poll the same data.
 """
 from __future__ import annotations
 

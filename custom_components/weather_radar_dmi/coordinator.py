@@ -50,10 +50,10 @@ def _trim_memory() -> None:
     work. CPython/glibc otherwise keep that memory reserved for reuse
     within the process rather than releasing it — fine while actively
     computing, but it means the process's RSS stays at its peak for the
-    whole ~2-min idle gap until the next poll too (see
-    PLAN-HA-COMPONENT.md's resource-usage benchmark). Best-effort: quietly
-    does nothing on non-glibc platforms (e.g. musl-based containers),
-    where skipping it doesn't hurt anything either."""
+    whole ~2-min idle gap until the next poll too (see CLAUDE.md).
+    Best-effort: quietly does nothing on non-glibc platforms (e.g.
+    musl-based containers), where skipping it doesn't hurt anything
+    either."""
     gc.collect()
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
@@ -65,7 +65,7 @@ def _trim_memory() -> None:
 
 def _fetch_latest_items() -> list[dict]:
     """Server-side call to DMI's API — no API key required for the
-    composite radar collection (see PLAN-DMI-MIGRATION.md)."""
+    composite radar collection (verified directly against the live API)."""
     with urllib.request.urlopen(ITEMS_URL, timeout=15) as resp:
         data = json.load(resp)
     # DMI alternates scanType between 'fullRange' (240km, full national
@@ -178,7 +178,7 @@ class WeatherRadarDmiCoordinator(DataUpdateCoordinator[list[dict]]):
         )
 
         # Piecewise (tile-based) motion field instead of one global vector —
-        # see nowcast.py and PLAN-DMI-MIGRATION.md for why.
+        # see nowcast.py and CLAUDE.md for why.
         dy_field_baseline, dx_field_baseline = estimate_motion_field(
             dbz_base, valid_base, dbz_curr, valid_curr, anchor_override=anchor_override)
         dy_field = dy_field_baseline / MOTION_BASELINE_STEPS
@@ -244,8 +244,8 @@ class WeatherRadarDmiCoordinator(DataUpdateCoordinator[list[dict]]):
         current serving window. Without this, every ~10-min DMI publish
         leaves one new observed-frame PNG and one new forecast-frame PNG
         that never get cleaned up — unbounded growth (~35 GB/year measured
-        against live DMI data; see PLAN-HA-COMPONENT.md's resource-usage
-        benchmark). Safe to call unconditionally at the end of every poll:
+        against live DMI data; see CLAUDE.md). Safe to call unconditionally
+        at the end of every poll:
         DataUpdateCoordinator never runs two _poll_sync calls concurrently,
         so there's no in-flight recompute this could race (contrast with
         dev/server.py's prune_png_cache, which has to be more careful about

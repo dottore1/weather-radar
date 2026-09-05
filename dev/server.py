@@ -6,7 +6,7 @@ browser, and inspect the rendered/aligned radar frames directly.
 
 Then visit http://localhost:8765/
 
-See PLAN-PERFORMANCE.md for the load-time optimizations implemented here.
+See CLAUDE.md for the load-time optimizations implemented here.
 """
 from __future__ import annotations
 
@@ -146,9 +146,9 @@ def _compute_forecast_sync(items: list[dict]) -> list[dict]:
     )
 
     # Piecewise (tile-based) motion field instead of one global vector — see
-    # dev/nowcast.py and PLAN-DMI-MIGRATION.md for why: a single vector can
-    # only slide the whole frame rigidly, and can't represent different
-    # regions of the sky moving differently.
+    # dev/nowcast.py and CLAUDE.md for why: a single vector can only slide
+    # the whole frame rigidly, and can't represent different regions of the
+    # sky moving differently.
     dy_field_baseline, dx_field_baseline = estimate_motion_field(
         dbz_base, valid_base, dbz_curr, valid_curr, anchor_override=anchor_override)
     dy_field = dy_field_baseline / MOTION_BASELINE_STEPS
@@ -200,7 +200,7 @@ def prune_png_cache(current_ids: set[str]) -> None:
     serving window. Without this, every ~10-min DMI publish leaves one new
     observed-frame PNG and one new forecast-frame PNG that never get
     cleaned up — unbounded growth (~35 GB/year measured against live DMI
-    data; see PLAN-HA-COMPONENT.md's resource-usage benchmark).
+    data; see CLAUDE.md).
 
     Only ever called right after a fresh (items, forecast) window has been
     fully computed and is about to become authoritative (see the
@@ -219,8 +219,8 @@ def _trim_memory() -> None:
     FFT/reprojection work. CPython/glibc otherwise keep that memory
     reserved for reuse within the process rather than releasing it — fine
     while actively computing, but it means RSS stays at its peak between
-    polls too (see PLAN-HA-COMPONENT.md's resource-usage benchmark).
-    Best-effort: quietly does nothing on non-glibc platforms."""
+    polls too (see CLAUDE.md). Best-effort: quietly does nothing on
+    non-glibc platforms."""
     gc.collect()
     try:
         ctypes.CDLL("libc.so.6").malloc_trim(0)

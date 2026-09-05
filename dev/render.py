@@ -52,8 +52,8 @@ WORK_HEIGHT = OUT_HEIGHT + 2 * MARGIN_PX_Y
 # noise floor / clear-air return, not rain. The previous first stop at 5.0
 # painted a lot of that as faint-but-visible, washing out real dry regions
 # into a near-continuous haze. A/B tested several thresholds against DMI's
-# own reference rendering for the same real composite (see
-# PLAN-DMI-MIGRATION.md); 20 dBZ was the one that reproduced DMI's actual
+# own reference rendering for the same real composite (see CLAUDE.md); 20
+# dBZ was the one that reproduced DMI's actual
 # dry/wet contrast (e.g. a genuinely dry central Jutland showing as dry,
 # not lightly shaded) rather than one continuous smear.
 COLOR_STOPS = [
