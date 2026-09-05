@@ -115,6 +115,10 @@ const TEMPLATE = `
   .coast-poly{ fill:var(--secondary-background-color,#20262c); stroke:var(--secondary-text-color,#3a4652); stroke-width:1; }
   .city{ fill:var(--primary-text-color,#eef2f5); font-size:12px; font-family:inherit; paint-order:stroke; stroke:var(--card-background-color,#0d1013); stroke-width:3px; }
   .city-dot{ fill:var(--primary-text-color,#eef2f5); stroke:var(--card-background-color,#0d1013); stroke-width:1px; }
+  /* Fixed red/white, not theme-bound like the rest of the map — this
+     marker's whole job is to always stand out, against a light map, a dark
+     map, or the radar color ramp, regardless of theme. */
+  .home-marker{ fill:#e53935; stroke:#fff; stroke-width:1.5px; }
   .controls{ display:flex; align-items:center; gap:12px; margin-top:12px; }
   button{ background:var(--primary-color,#03a9f4); color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:14px; }
   .timeline{ flex:1; position:relative; height:18px; margin-bottom:18px; }
@@ -171,6 +175,7 @@ class WeatherRadarDmiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._drawHomeMarker(hass);
   }
 
   getCardSize() {
@@ -243,6 +248,30 @@ class WeatherRadarDmiCard extends HTMLElement {
       label.textContent = name;
       citiesSvg.appendChild(label);
     });
+  }
+
+  // hass.config.latitude/longitude is HA's own configured home location
+  // (Settings > System > General) — already on every hass object, no
+  // separate API call needed. Only ever drawn once: _buildMap() (which
+  // creates the #cities layer) runs from setConfig(), before Lovelace ever
+  // assigns hass for the first time, so this can't happen there; and hass
+  // gets reassigned on every HA state change, so without the
+  // _homeMarkerDrawn guard this would redraw (and duplicate) constantly.
+  _drawHomeMarker(hass) {
+    if (this._homeMarkerDrawn) return;
+    const lat = hass.config && hass.config.latitude;
+    const lon = hass.config && hass.config.longitude;
+    if (!lat && !lon) return; // missing, or HA's un-configured (0, 0) sentinel
+    this._homeMarkerDrawn = true;
+    const [x, y] = px(lon, lat);
+    const marker = document.createElementNS(ns, 'circle');
+    marker.setAttribute('cx', x);
+    marker.setAttribute('cy', y);
+    marker.setAttribute('r', 5);
+    marker.setAttribute('class', 'home-marker');
+    // Appended after the city dots/labels (drawn in _buildMap, which always
+    // runs first) so it paints on top if it ever overlaps one.
+    this.shadowRoot.getElementById('cities').appendChild(marker);
   }
 
   async _loadFrames() {
