@@ -10,6 +10,8 @@ reprojected, colorized and extrapolated entirely on your own Home
 Assistant instance. No external server to host: install the integration
 and its matching Lovelace card comes with it.
 
+![DMI Vejrradar card](preview.png)
+
 ## Installation
 
 ### HACS (custom repository)
@@ -39,9 +41,14 @@ Add a card with:
 type: custom:weather-radar-dmi-card
 ```
 
-No configuration options — the card fetches from this integration's own
-endpoints (same-origin, using your existing HA session), which are backed
-by a background poll every 2 minutes.
+The card fetches from this integration's own endpoints (same-origin, using
+your existing HA session), which are backed by a background poll every 2
+minutes. Two options are available from the card's own Config tab in the
+dashboard editor (both default to on):
+
+- **Autoplay** — start the timeline playing automatically.
+- **Show home location marker** — a red marker at your configured Home
+  Assistant location (Settings → System → General).
 
 ## Running the tests
 
