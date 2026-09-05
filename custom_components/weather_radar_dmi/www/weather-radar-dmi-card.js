@@ -323,6 +323,23 @@ class WeatherRadarDmiCard extends HTMLElement {
     this._homeMarkerEl = marker;
   }
 
+  // Index of whichever frame's own timestamp is nearest the actual wall-
+  // clock time right now — see the caller in _loadFrames for why this
+  // isn't just this._nowIdx.
+  _closestToNowIdx() {
+    const now = Date.now();
+    let bestIdx = 0;
+    let bestDiff = Infinity;
+    this._frames.forEach((f, idx) => {
+      const diff = Math.abs(new Date(f.time).getTime() - now);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = idx;
+      }
+    });
+    return bestIdx;
+  }
+
   async _loadFrames() {
     if (!this._hass) return; // hass not attached yet — the next poll will retry
     try {
@@ -373,11 +390,19 @@ class WeatherRadarDmiCard extends HTMLElement {
         .map(i => `<span>${fmtLocal(this._frames[i].time)}</span>`)
         .join('');
 
-      // First load should land on "now" (latest observed), not the oldest
-      // frame; later refreshes preserve wherever the user was scrubbed to,
+      // Land on whichever frame's own timestamp is closest to the actual
+      // current time, not this._nowIdx (the latest *observed* frame) --
+      // DMI's own processing lag (see README) means the latest observed
+      // frame is typically 15-25 min stale, so "now" is usually a few
+      // steps into the forecast by the time we'd show it. this._nowIdx
+      // stays the real data-provenance boundary (observed vs. forecast,
+      // used for the Nu mark/label and the Seneste/Prognose/Observeret
+      // labeling in _show) -- only *which frame loads by default* changes
+      // here. Later refreshes preserve wherever the user was scrubbed to,
       // unless they were already sitting near "now".
-      const targetIdx = !this._hasLoadedOnce ? this._nowIdx
-        : (this._sliderValue >= this._nowIdx - 1 ? this._nowIdx : Math.min(this._sliderValue, lastIdx));
+      const nowIdx = this._closestToNowIdx();
+      const targetIdx = !this._hasLoadedOnce ? nowIdx
+        : (this._sliderValue >= this._nowIdx - 1 ? nowIdx : Math.min(this._sliderValue, lastIdx));
       this._hasLoadedOnce = true;
 
       // Prioritize whichever frame is about to actually be shown, then
