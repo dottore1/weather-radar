@@ -162,6 +162,15 @@ class WeatherRadarDmiCard extends HTMLElement {
     return {};
   }
 
+  // Presence alone is what flips HA's edit dialog from "This card doesn't
+  // support the visual editor — YAML only" to a real Configuration tab (and,
+  // in sections-view dashboards, unlocks the separate Layout tab too — see
+  // getGridOptions below). An empty schema is intentional: there's nothing
+  // to configure yet, so there's nothing to show beyond that.
+  static getConfigForm() {
+    return { schema: [] };
+  }
+
   setConfig(config) {
     this._config = config || {};
     if (!this.shadowRoot) {
@@ -180,6 +189,17 @@ class WeatherRadarDmiCard extends HTMLElement {
 
   getCardSize() {
     return 6;
+  }
+
+  // Sections-view dashboards size cards via a resizable grid instead of
+  // getCardSize's masonry-only column-balancing hint above; without this,
+  // HA defaults to the full 12 columns with no min/max and no drag-resize
+  // affordance at all. Starting values, not a final answer — the map's
+  // 1000:700 aspect ratio plus ~70px of controls below it means it reads
+  // reasonably at a range of sizes; verified live that the Layout tab's
+  // sliders honor these bounds.
+  getGridOptions() {
+    return { rows: 6, columns: 12, min_rows: 4, max_rows: 12, min_columns: 6, max_columns: 12 };
   }
 
   connectedCallback() {
